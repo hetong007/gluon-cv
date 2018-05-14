@@ -165,10 +165,10 @@ def train(epochs, ctx):
     net.initialize(mx.init.Xavier(magnitude=2), ctx=ctx)
 
     train_data = gluon.data.DataLoader(
-        imagenet.classification.ImageNet(opt.data_dir, train=True).transform_first(transform_train),
+        imagenet.dummy.Dummy(opt.data_dir, train=True).transform_first(transform_train),
         batch_size=batch_size, shuffle=True, last_batch='discard', num_workers=num_workers)
     val_data = gluon.data.DataLoader(
-        imagenet.classification.ImageNet(opt.data_dir, train=False).transform_first(transform_test),
+        imagenet.dummy.Dummy(opt.data_dir, train=False).transform_first(transform_test),
         batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
     trainer = gluon.Trainer(net.collect_params(), optimizer, optimizer_params)

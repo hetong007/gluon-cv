@@ -3,6 +3,7 @@ This module provides data loaders and transfomers for popular vision datasets.
 """
 from . import transforms
 from .imagenet.classification import ImageNet
+from .imagenet.dummy import Dummy
 from .dataloader import DetectionDataLoader
 from .pascal_voc.detection import VOCDetection
 from .mscoco.detection import COCODetection
