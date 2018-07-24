@@ -119,10 +119,10 @@ if opt.dtype != 'float32':
 net = get_model(model_name, **kwargs)
 net.cast(opt.dtype)
 
-print("About to create kv!")
+logging.info("About to create kv!")
 store = mx.kv.create('dist_device_sync')
-print("Total number of workers: %d" % store.num_workers)
-print("This worker's rank: %d" % store.rank)
+logging.info("Total number of workers: %d" % store.num_workers)
+logging.info("This worker's rank: %d" % store.rank)
 
 # Two functions for reading data from record file or raw images
 def get_data_rec(rec_train, rec_train_idx, rec_val, rec_val_idx, batch_size, num_workers):
