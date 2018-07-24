@@ -185,8 +185,8 @@ def get_data_rec(rec_train, rec_train_idx, rec_val, rec_val_idx, batch_size, num
         std_g               = std_rgb[1],
         std_b               = std_rgb[2],
 
-        # num_parts           = store.num_workers,
-        # part_index          = store.rank,
+        num_parts           = store.num_workers,
+        part_index          = store.rank,
     )
     return train_data, val_data, batch_fn
 
