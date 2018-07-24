@@ -120,6 +120,7 @@ net = get_model(model_name, **kwargs)
 net.cast(opt.dtype)
 
 logging.info("About to create kv!")
+# store = mx.kv.create('dist_device_sync')
 store = mx.kv.create('dist_device_sync')
 logging.info("Total number of workers: %d" % store.num_workers)
 logging.info("This worker's rank: %d" % store.rank)
