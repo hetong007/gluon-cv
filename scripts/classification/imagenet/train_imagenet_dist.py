@@ -120,6 +120,8 @@ net = get_model(model_name, **kwargs)
 net.cast(opt.dtype)
 
 store = mx.kv.create('dist_device_sync')
+print("Total number of workers: %d" % store.num_workers)
+print("This worker's rank: %d" % store.rank)
 
 # Two functions for reading data from record file or raw images
 def get_data_rec(rec_train, rec_train_idx, rec_val, rec_val_idx, batch_size, num_workers):
@@ -289,7 +291,7 @@ def train(ctx):
         ctx = [ctx]
     net.initialize(mx.init.MSRAPrelu(), ctx=ctx)
 
-    trainer = gluon.Trainer(net.collect_params(), optimizer, optimizer_params)
+    trainer = gluon.Trainer(net.collect_params(), optimizer, optimizer_params, kvstore=store)
 
     L = gluon.loss.SoftmaxCrossEntropyLoss()
 
