@@ -119,6 +119,7 @@ if opt.dtype != 'float32':
 net = get_model(model_name, **kwargs)
 net.cast(opt.dtype)
 
+print("About to create kv!")
 store = mx.kv.create('dist_device_sync')
 print("Total number of workers: %d" % store.num_workers)
 print("This worker's rank: %d" % store.rank)
@@ -183,8 +184,8 @@ def get_data_rec(rec_train, rec_train_idx, rec_val, rec_val_idx, batch_size, num
         std_g               = std_rgb[1],
         std_b               = std_rgb[2],
 
-        num_parts           = store.num_workers,
-        part_index          = store.rank,
+        # num_parts           = store.num_workers,
+        # part_index          = store.rank,
     )
     return train_data, val_data, batch_fn
 
@@ -248,8 +249,7 @@ def get_data_loader(data_dir, batch_size, num_workers):
         sampler=SplitSampler(num_training_samples, store.num_workers, store.rank))
     val_data = gluon.data.DataLoader(
         imagenet.classification.ImageNet(data_dir, train=False).transform_first(transform_test),
-        batch_size=batch_size, shuffle=False, num_workers=num_workers,
-        sampler=SplitSampler(num_testing_samples, store.num_workers, store.rank))
+        batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
     return train_data, val_data, batch_fn
 
