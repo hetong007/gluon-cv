@@ -119,7 +119,7 @@ if opt.dtype != 'float32':
 net = get_model(model_name, **kwargs)
 net.cast(opt.dtype)
 
-store = mxnet.kv.create('dist_sync_device')
+store = mx.kv.create('dist_device_sync')
 
 # Two functions for reading data from record file or raw images
 def get_data_rec(rec_train, rec_train_idx, rec_val, rec_val_idx, batch_size, num_workers):
