@@ -169,6 +169,7 @@ def get_data_rec(rec_train, rec_train_idx, rec_val, rec_val_idx, batch_size, num
         num_parts           = store.num_workers,
         part_index          = store.rank,
     )
+    # Evaluate on full validation set
     val_data = mx.io.ImageRecordIter(
         path_imgrec         = rec_val,
         path_imgidx         = rec_val_idx,
@@ -184,9 +185,6 @@ def get_data_rec(rec_train, rec_train_idx, rec_val, rec_val_idx, batch_size, num
         std_r               = std_rgb[0],
         std_g               = std_rgb[1],
         std_b               = std_rgb[2],
-
-        num_parts           = store.num_workers,
-        part_index          = store.rank,
     )
     return train_data, val_data, batch_fn
 
@@ -248,6 +246,7 @@ def get_data_loader(data_dir, batch_size, num_workers):
         imagenet.classification.ImageNet(data_dir, train=True).transform_first(transform_train),
         batch_size=batch_size, shuffle=True, last_batch='discard', num_workers=num_workers,
         sampler=SplitSampler(num_training_samples, store.num_workers, store.rank))
+    # Evaluate on full validation set
     val_data = gluon.data.DataLoader(
         imagenet.classification.ImageNet(data_dir, train=False).transform_first(transform_test),
         batch_size=batch_size, shuffle=False, num_workers=num_workers)
