@@ -292,7 +292,8 @@ def train(ctx):
         ctx = [ctx]
     net.initialize(mx.init.MSRAPrelu(), ctx=ctx)
 
-    trainer = gluon.Trainer(net.collect_params(), optimizer, optimizer_params, kvstore=store)
+    trainer = gluon.Trainer(net.collect_params(), optimizer, optimizer_params,
+                            kvstore=store, update_on_kvstore=True)
 
     L = gluon.loss.SoftmaxCrossEntropyLoss()
 
