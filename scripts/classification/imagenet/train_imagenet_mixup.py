@@ -278,7 +278,7 @@ def train(ctx):
             data_1, label_1 = batch_fn(batch, ctx)
 
             lam = np.random.beta(alpha, alpha)
-            if epoch >= epochs - 20:
+            if epoch >= opt.num_epochs - 20:
                 lam = 1
 
             data = [lam*X + (1-lam)*X[::-1] for X in data_1]
@@ -290,13 +290,13 @@ def train(ctx):
 
             with ag.record():
                 outputs = [net(X.astype(opt.dtype, copy=False)) for X in data]
-                loss = [L(yhat, y) for yhat, y in zip(outputs, label)]
+                loss = [L(yhat.astype('float32', copy=False), y) for yhat, y in zip(outputs, label)]
             for l in loss:
                 l.backward()
             lr_scheduler.update(i, epoch)
             trainer.step(batch_size)
 
-            output_softmax = [nd.SoftmaxActivation(out) for out in outputs]
+            output_softmax = [nd.SoftmaxActivation(out.astype('float32', copy=False)) for out in outputs]
             rmse.update(label, output_softmax)
             if opt.log_interval and not (i+1)%opt.log_interval:
                 _, rmse_score = rmse.get()
