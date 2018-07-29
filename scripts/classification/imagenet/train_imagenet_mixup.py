@@ -1,6 +1,7 @@
 import argparse, time, logging, os, random
 
 import mxnet as mx
+import numpy as np
 from mxnet import gluon, nd
 from mxnet import autograd as ag
 from mxnet.gluon import nn
