@@ -195,7 +195,8 @@ class ResNetV1b(HybridBlock):
             downsample = nn.HybridSequential(prefix='down%d_'%stage_index)
             with downsample.name_scope():
                 if avg_down:
-                    downsample.add(nn.AvgPool2D(pool_size=strides, strides=strides))
+                    downsample.add(nn.AvgPool2D(pool_size=3, strides=strides,
+                                                padding=1, count_include_pad=False))
                     downsample.add(nn.Conv2D(channels=planes * block.expansion, kernel_size=1,
                                              strides=1, use_bias=False))
                     downsample.add(norm_layer(**self.norm_kwargs))
