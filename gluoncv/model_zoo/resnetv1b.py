@@ -119,8 +119,9 @@ class ResNetV1b(HybridBlock):
         Whether to initialize the gamma of the last BatchNorm layer in each bottleneck to zero.
     deep_stem : bool, default False
         Whether to replace the 7x7 conv1 with 3 3x3 convolution layers.
-    avg_down : bool, default False
-        Whether to use average pooling for projection skip connection between stages/downsample.
+    dwconv_down : bool, default False
+        Whether to add a transition layer of dwconv3x3 to downsample the feature map;
+        if True then no stride in block is needed.
     final_drop : float, default 0.0
         Dropout ratio before the final classification layer.
     use_global_stats : bool, default False
@@ -138,7 +139,7 @@ class ResNetV1b(HybridBlock):
     # pylint: disable=unused-variable
     def __init__(self, block, layers, classes=1000, dilated=False, norm_layer=BatchNorm,
                  norm_kwargs={}, last_gamma=False, deep_stem=False, stem_width=32,
-                 avg_down=False, final_drop=0.0, use_global_stats=False, **kwargs):
+                 dwconv_down=False, final_drop=0.0, use_global_stats=False, **kwargs):
         self.inplanes = stem_width*2 if deep_stem else 64
         super(ResNetV1b, self).__init__()
         self.norm_kwargs = norm_kwargs
@@ -163,24 +164,23 @@ class ResNetV1b(HybridBlock):
             self.bn1 = norm_layer(**norm_kwargs)
             self.relu = nn.Activation('relu')
             self.maxpool = nn.MaxPool2D(pool_size=3, strides=2, padding=1)
-            self.layer1 = self._make_layer(1, block, 64, layers[0], avg_down=avg_down,
+
+            self.dw_conv_down = dw_conv_down
+            layer_strides = 1 if dw_conv_down else 2
+            self.layer1 = self._make_layer(1, block, 64, layers[0],
                                            norm_layer=norm_layer, last_gamma=last_gamma)
-            self.layer2 = self._make_layer(2, block, 128, layers[1], strides=2, avg_down=avg_down,
+            self.layer2 = self._make_layer(2, block, 128, layers[1], strides=layer_strides,
                                            norm_layer=norm_layer, last_gamma=last_gamma)
             if dilated:
                 self.layer3 = self._make_layer(3, block, 256, layers[2], strides=1, dilation=2,
-                                               avg_down=avg_down, norm_layer=norm_layer,
-                                               last_gamma=last_gamma)
+                                               norm_layer=norm_layer, last_gamma=last_gamma)
                 self.layer4 = self._make_layer(4, block, 512, layers[3], strides=1, dilation=4,
-                                               avg_down=avg_down, norm_layer=norm_layer,
-                                               last_gamma=last_gamma)
+                                               norm_layer=norm_layer, last_gamma=last_gamma)
             else:
-                self.layer3 = self._make_layer(3, block, 256, layers[2], strides=2,
-                                               avg_down=avg_down, norm_layer=norm_layer,
-                                               last_gamma=last_gamma)
-                self.layer4 = self._make_layer(4, block, 512, layers[3], strides=2,
-                                               avg_down=avg_down, norm_layer=norm_layer,
-                                               last_gamma=last_gamma)
+                self.layer3 = self._make_layer(3, block, 256, layers[2], strides=layer_strides,
+                                               norm_layer=norm_layer, last_gamma=last_gamma)
+                self.layer4 = self._make_layer(4, block, 512, layers[3], strides=layer_strides,
+                                               norm_layer=norm_layer, last_gamma=last_gamma)
             self.avgpool = nn.GlobalAvgPool2D()
             self.flat = nn.Flatten()
             self.drop = None
@@ -189,30 +189,36 @@ class ResNetV1b(HybridBlock):
             self.fc = nn.Dense(in_units=512 * block.expansion, units=classes)
 
     def _make_layer(self, stage_index, block, planes, blocks, strides=1, dilation=1,
-                    avg_down=False, norm_layer=None, last_gamma=False):
+                    norm_layer=None, last_gamma=False):
         downsample = None
         if strides != 1 or self.inplanes != planes * block.expansion:
             downsample = nn.HybridSequential(prefix='down%d_'%stage_index)
             with downsample.name_scope():
-                if avg_down:
-                    downsample.add(nn.AvgPool2D(pool_size=3, strides=strides,
-                                                padding=1, count_include_pad=False))
-                    downsample.add(nn.Conv2D(channels=planes * block.expansion, kernel_size=1,
-                                             strides=1, use_bias=False))
-                    downsample.add(norm_layer(**self.norm_kwargs))
-                else:
-                    downsample.add(nn.Conv2D(channels=planes * block.expansion,
-                                             kernel_size=1, strides=strides, use_bias=False))
-                    downsample.add(norm_layer(**self.norm_kwargs))
+                downsample.add(nn.Conv2D(channels=planes * block.expansion,
+                                         kernel_size=1, strides=strides, use_bias=False))
+                downsample.add(norm_layer(**self.norm_kwargs))
 
         layers = nn.HybridSequential(prefix='layers%d_'%stage_index)
         with layers.name_scope():
             if dilation in (1, 2):
+                if self.dw_conv_down and stage_index > 1:
+                    if dilation == 1:
+                        layers.add(nn.Conv2D(channels=planes*2, kernel_size=3, strides=strides,
+                                             padding=1, groups=planes*2, use_bias=False))
+                    else:
+                        layers.add(nn.Conv2D(channels=planes*2, kernel_size=3, strides=1,
+                                             padding=1, groups=planes*2, use_bias=False))
+                    layers.add(norm_layer(**norm_kwargs))
                 layers.add(block(planes, strides, dilation=1,
                                  downsample=downsample, previous_dilation=dilation,
                                  norm_layer=norm_layer, norm_kwargs=self.norm_kwargs,
                                  last_gamma=last_gamma))
             elif dilation == 4:
+                if self.dw_conv_down and stage_index > 1:
+                    layers.add(nn.Conv2D(channels=planes*2, kernel_size=3, strides=1,
+                                         dilation=2, padding=2, groups=planes*2,
+                                         use_bias=False))
+                    layers.add(norm_layer(**norm_kwargs))
                 layers.add(block(planes, strides, dilation=2,
                                  downsample=downsample, previous_dilation=dilation,
                                  norm_layer=norm_layer, norm_kwargs=self.norm_kwargs,
@@ -479,7 +485,7 @@ def resnet50_v1d(pretrained=False, root='~/.mxnet/models', ctx=cpu(0), **kwargs)
     norm_layer : object
         Normalization layer used in backbone network (default: :class:`mxnet.gluon.norm_layer`;
     """
-    model = ResNetV1b(BottleneckV1b, [3, 4, 6, 3], deep_stem=True, avg_down=True, **kwargs)
+    model = ResNetV1b(BottleneckV1b, [3, 4, 6, 3], deep_stem=True, dwconv_down=True, **kwargs)
     if pretrained:
         from .model_store import get_model_file
         model.load_params(get_model_file('resnet%d_v%dd'%(50, 1),
@@ -502,7 +508,7 @@ def resnet101_v1d(pretrained=False, root='~/.mxnet/models', ctx=cpu(0), **kwargs
     norm_layer : object
         Normalization layer used in backbone network (default: :class:`mxnet.gluon.norm_layer`;
     """
-    model = ResNetV1b(BottleneckV1b, [3, 4, 23, 3], deep_stem=True, avg_down=True, **kwargs)
+    model = ResNetV1b(BottleneckV1b, [3, 4, 23, 3], deep_stem=True, dwconv_down=True, **kwargs)
     if pretrained:
         from .model_store import get_model_file
         model.load_params(get_model_file('resnet%d_v%dd'%(101, 1),
@@ -525,7 +531,7 @@ def resnet152_v1d(pretrained=False, root='~/.mxnet/models', ctx=cpu(0), **kwargs
     norm_layer : object
         Normalization layer used in backbone network (default: :class:`mxnet.gluon.norm_layer`;
     """
-    model = ResNetV1b(BottleneckV1b, [3, 8, 36, 3], deep_stem=True, avg_down=True, **kwargs)
+    model = ResNetV1b(BottleneckV1b, [3, 8, 36, 3], deep_stem=True, dwconv_down=True, **kwargs)
     if pretrained:
         from .model_store import get_model_file
         model.load_params(get_model_file('resnet%d_v%dd'%(152, 1),
@@ -549,7 +555,7 @@ def resnet50_v1e(pretrained=False, root='~/.mxnet/models', ctx=cpu(0), **kwargs)
         Normalization layer used in backbone network (default: :class:`mxnet.gluon.norm_layer`;
     """
     model = ResNetV1b(BottleneckV1b, [3, 4, 6, 3],
-                      deep_stem=True, avg_down=True, stem_width=64, **kwargs)
+                      deep_stem=True, stem_width=64, dwconv_down=True, **kwargs)
     if pretrained:
         from .model_store import get_model_file
         model.load_params(get_model_file('resnet%d_v%dd'%(50, 1),
@@ -573,7 +579,7 @@ def resnet101_v1e(pretrained=False, root='~/.mxnet/models', ctx=cpu(0), **kwargs
         Normalization layer used in backbone network (default: :class:`mxnet.gluon.norm_layer`;
     """
     model = ResNetV1b(BottleneckV1b, [3, 4, 23, 3],
-                      deep_stem=True, avg_down=True, stem_width=64, **kwargs)
+                      deep_stem=True, stem_width=64, dwconv_down=True, **kwargs)
     if pretrained:
         from .model_store import get_model_file
         model.load_params(get_model_file('resnet%d_v%dd'%(101, 1),
@@ -597,7 +603,7 @@ def resnet152_v1e(pretrained=False, root='~/.mxnet/models', ctx=cpu(0), **kwargs
         Normalization layer used in backbone network (default: :class:`mxnet.gluon.norm_layer`;
     """
     model = ResNetV1b(BottleneckV1b, [3, 8, 36, 3],
-                      deep_stem=True, avg_down=True, stem_width=64, **kwargs)
+                      deep_stem=True, stem_width=64, dwconv_down=True, **kwargs)
     if pretrained:
         from .model_store import get_model_file
         model.load_params(get_model_file('resnet%d_v%dd'%(152, 1),
