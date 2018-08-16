@@ -209,20 +209,30 @@ class ResNetV1b(HybridBlock):
                         layers.add(nn.Conv2D(channels=planes*2, kernel_size=3, strides=1,
                                              padding=1, groups=planes*2, use_bias=False))
                     layers.add(norm_layer(**norm_kwargs))
-                layers.add(block(planes, strides, dilation=1,
-                                 downsample=downsample, previous_dilation=dilation,
-                                 norm_layer=norm_layer, norm_kwargs=self.norm_kwargs,
-                                 last_gamma=last_gamma))
+                    layers.add(block(planes, strides, dilation=dilation,
+                                     downsample=downsample, previous_dilation=dilation,
+                                     norm_layer=norm_layer, norm_kwargs=self.norm_kwargs,
+                                     last_gamma=last_gamma))
+                else:
+                    layers.add(block(planes, strides, dilation=1,
+                                     downsample=downsample, previous_dilation=dilation,
+                                     norm_layer=norm_layer, norm_kwargs=self.norm_kwargs,
+                                     last_gamma=last_gamma))
             elif dilation == 4:
                 if self.dw_conv_down and stage_index > 1:
                     layers.add(nn.Conv2D(channels=planes*2, kernel_size=3, strides=1,
                                          dilation=2, padding=2, groups=planes*2,
                                          use_bias=False))
                     layers.add(norm_layer(**norm_kwargs))
-                layers.add(block(planes, strides, dilation=2,
-                                 downsample=downsample, previous_dilation=dilation,
-                                 norm_layer=norm_layer, norm_kwargs=self.norm_kwargs,
-                                 last_gamma=last_gamma))
+                    layers.add(block(planes, strides, dilation=dilation,
+                                     downsample=downsample, previous_dilation=dilation,
+                                     norm_layer=norm_layer, norm_kwargs=self.norm_kwargs,
+                                     last_gamma=last_gamma))
+                else:
+                    layers.add(block(planes, strides, dilation=2,
+                                     downsample=downsample, previous_dilation=dilation,
+                                     norm_layer=norm_layer, norm_kwargs=self.norm_kwargs,
+                                     last_gamma=last_gamma))
             else:
                 raise RuntimeError("=> unknown dilation size: {}".format(dilation))
 
