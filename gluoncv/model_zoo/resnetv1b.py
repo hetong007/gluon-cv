@@ -119,7 +119,7 @@ class ResNetV1b(HybridBlock):
         Whether to initialize the gamma of the last BatchNorm layer in each bottleneck to zero.
     deep_stem : bool, default False
         Whether to replace the 7x7 conv1 with 3 3x3 convolution layers.
-    dwconv_down : bool, default False
+    dw_conv_down : bool, default False
         Whether to add a transition layer of dwconv3x3 to downsample the feature map;
         if True then no stride in block is needed.
     final_drop : float, default 0.0
@@ -139,7 +139,7 @@ class ResNetV1b(HybridBlock):
     # pylint: disable=unused-variable
     def __init__(self, block, layers, classes=1000, dilated=False, norm_layer=BatchNorm,
                  norm_kwargs={}, last_gamma=False, deep_stem=False, stem_width=32,
-                 dwconv_down=False, final_drop=0.0, use_global_stats=False, **kwargs):
+                 dw_conv_down=False, final_drop=0.0, use_global_stats=False, **kwargs):
         self.inplanes = stem_width*2 if deep_stem else 64
         super(ResNetV1b, self).__init__()
         self.norm_kwargs = norm_kwargs
@@ -203,12 +203,7 @@ class ResNetV1b(HybridBlock):
             if dilation in (1, 2):
                 if self.dw_conv_down and stage_index > 1:
                     if dilation == 1:
-                        layers.add(nn.Conv2D(channels=planes*2, kernel_size=3, strides=strides,
-                                             padding=1, groups=planes*2, use_bias=False))
-                    else:
-                        layers.add(nn.Conv2D(channels=planes*2, kernel_size=3, strides=1,
-                                             padding=1, groups=planes*2, use_bias=False))
-                    layers.add(norm_layer(**norm_kwargs))
+                        layers.add(nn.AvgPool2D(pool_size=2, strides=2))
                     layers.add(block(planes, strides, dilation=dilation,
                                      downsample=downsample, previous_dilation=dilation,
                                      norm_layer=norm_layer, norm_kwargs=self.norm_kwargs,
@@ -219,20 +214,10 @@ class ResNetV1b(HybridBlock):
                                      norm_layer=norm_layer, norm_kwargs=self.norm_kwargs,
                                      last_gamma=last_gamma))
             elif dilation == 4:
-                if self.dw_conv_down and stage_index > 1:
-                    layers.add(nn.Conv2D(channels=planes*2, kernel_size=3, strides=1,
-                                         dilation=2, padding=2, groups=planes*2,
-                                         use_bias=False))
-                    layers.add(norm_layer(**norm_kwargs))
-                    layers.add(block(planes, strides, dilation=dilation,
-                                     downsample=downsample, previous_dilation=dilation,
-                                     norm_layer=norm_layer, norm_kwargs=self.norm_kwargs,
-                                     last_gamma=last_gamma))
-                else:
-                    layers.add(block(planes, strides, dilation=2,
-                                     downsample=downsample, previous_dilation=dilation,
-                                     norm_layer=norm_layer, norm_kwargs=self.norm_kwargs,
-                                     last_gamma=last_gamma))
+                layers.add(block(planes, strides, dilation=2,
+                                 downsample=downsample, previous_dilation=dilation,
+                                 norm_layer=norm_layer, norm_kwargs=self.norm_kwargs,
+                                 last_gamma=last_gamma))
             else:
                 raise RuntimeError("=> unknown dilation size: {}".format(dilation))
 
@@ -495,7 +480,7 @@ def resnet50_v1d(pretrained=False, root='~/.mxnet/models', ctx=cpu(0), **kwargs)
     norm_layer : object
         Normalization layer used in backbone network (default: :class:`mxnet.gluon.norm_layer`;
     """
-    model = ResNetV1b(BottleneckV1b, [3, 4, 6, 3], deep_stem=True, dwconv_down=True, **kwargs)
+    model = ResNetV1b(BottleneckV1b, [3, 4, 6, 3], deep_stem=True, dw_conv_down=True, **kwargs)
     if pretrained:
         from .model_store import get_model_file
         model.load_params(get_model_file('resnet%d_v%dd'%(50, 1),
@@ -518,7 +503,7 @@ def resnet101_v1d(pretrained=False, root='~/.mxnet/models', ctx=cpu(0), **kwargs
     norm_layer : object
         Normalization layer used in backbone network (default: :class:`mxnet.gluon.norm_layer`;
     """
-    model = ResNetV1b(BottleneckV1b, [3, 4, 23, 3], deep_stem=True, dwconv_down=True, **kwargs)
+    model = ResNetV1b(BottleneckV1b, [3, 4, 23, 3], deep_stem=True, dw_conv_down=True, **kwargs)
     if pretrained:
         from .model_store import get_model_file
         model.load_params(get_model_file('resnet%d_v%dd'%(101, 1),
@@ -541,7 +526,7 @@ def resnet152_v1d(pretrained=False, root='~/.mxnet/models', ctx=cpu(0), **kwargs
     norm_layer : object
         Normalization layer used in backbone network (default: :class:`mxnet.gluon.norm_layer`;
     """
-    model = ResNetV1b(BottleneckV1b, [3, 8, 36, 3], deep_stem=True, dwconv_down=True, **kwargs)
+    model = ResNetV1b(BottleneckV1b, [3, 8, 36, 3], deep_stem=True, dw_conv_down=True, **kwargs)
     if pretrained:
         from .model_store import get_model_file
         model.load_params(get_model_file('resnet%d_v%dd'%(152, 1),
@@ -565,7 +550,7 @@ def resnet50_v1e(pretrained=False, root='~/.mxnet/models', ctx=cpu(0), **kwargs)
         Normalization layer used in backbone network (default: :class:`mxnet.gluon.norm_layer`;
     """
     model = ResNetV1b(BottleneckV1b, [3, 4, 6, 3],
-                      deep_stem=True, stem_width=64, dwconv_down=True, **kwargs)
+                      deep_stem=True, stem_width=64, dw_conv_down=True, **kwargs)
     if pretrained:
         from .model_store import get_model_file
         model.load_params(get_model_file('resnet%d_v%dd'%(50, 1),
@@ -589,7 +574,7 @@ def resnet101_v1e(pretrained=False, root='~/.mxnet/models', ctx=cpu(0), **kwargs
         Normalization layer used in backbone network (default: :class:`mxnet.gluon.norm_layer`;
     """
     model = ResNetV1b(BottleneckV1b, [3, 4, 23, 3],
-                      deep_stem=True, stem_width=64, dwconv_down=True, **kwargs)
+                      deep_stem=True, stem_width=64, dw_conv_down=True, **kwargs)
     if pretrained:
         from .model_store import get_model_file
         model.load_params(get_model_file('resnet%d_v%dd'%(101, 1),
@@ -613,7 +598,7 @@ def resnet152_v1e(pretrained=False, root='~/.mxnet/models', ctx=cpu(0), **kwargs
         Normalization layer used in backbone network (default: :class:`mxnet.gluon.norm_layer`;
     """
     model = ResNetV1b(BottleneckV1b, [3, 8, 36, 3],
-                      deep_stem=True, stem_width=64, dwconv_down=True, **kwargs)
+                      deep_stem=True, stem_width=64, dw_conv_down=True, **kwargs)
     if pretrained:
         from .model_store import get_model_file
         model.load_params(get_model_file('resnet%d_v%dd'%(152, 1),
