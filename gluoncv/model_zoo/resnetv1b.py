@@ -217,10 +217,7 @@ class ResNetV1b(HybridBlock):
                                      last_gamma=last_gamma))
             elif dilation == 4:
                 if self.dw_conv_down and stage_index > 1:
-                    if dilation == 1:
-                        layers.add(nn.AvgPool2D(2))
-                    else:
-                        layers.add(nn.AvgPool2D(1))
+                    layers.add(nn.AvgPool2D(1))
                 layers.add(block(planes, strides, dilation=2,
                                  downsample=downsample, previous_dilation=dilation,
                                  norm_layer=norm_layer, norm_kwargs=self.norm_kwargs,
