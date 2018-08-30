@@ -25,6 +25,8 @@ parser.add_argument('--rec-val-idx', type=str, default='~/.mxnet/datasets/imagen
                     help='the index of validation data')
 parser.add_argument('--use-rec', action='store_true',
                     help='use image record iter for data input. default is false.')
+parser.add_argument('--use-dali', action='store_true',
+                    help='use dali iter from nvidia for data input. default is false.')
 parser.add_argument('--batch-size', type=int, default=32,
                     help='training batch size per device (CPU/GPU).')
 parser.add_argument('--dtype', type=str, default='float32',
@@ -234,10 +236,90 @@ def get_data_loader(data_dir, batch_size, num_workers):
 
     return train_data, val_data, batch_fn
 
+def get_data_dali(rec_train, rec_train_idx, rec_val, rec_val_idx, batch_size, num_workers):
+    try:
+        import nvidia.dali.ops as ops
+        import nvidia.dali.types as types
+        from nvidia.dali.pipeline import Pipeline
+        from nvidia.dali.plugin.mxnet import DALIClassificationIterator
+    except ImportError:
+        raise ImportError('Please install DALI following '
+                          'https://docs.nvidia.com/deeplearning/sdk/dali-master-branch-user-guide/docs/index.html')
+
+    class HybridTrainPipe(Pipeline):
+        def __init__(self, batch_size, num_threads, device_id, num_gpus):
+            super(HybridTrainPipe, self).__init__(batch_size, num_threads, device_id, seed = 12 + device_id)
+            self.input = ops.MXNetReader(path = rec_train, index_path=rec_train_idx,
+                                         random_shuffle = True, shard_id = device_id, num_shards = num_gpus)
+            self.decode = ops.nvJPEGDecoder(device = "mixed", output_type = types.RGB)
+            self.rrc = ops.RandomResizedCrop(device = "gpu", size = (224, 224))
+            self.cmnp = ops.CropMirrorNormalize(device = "gpu",
+                                                output_dtype = types.FLOAT,
+                                                output_layout = types.NCHW,
+                                                crop = (224, 224),
+                                                image_type = types.RGB,
+                                                mean = [123.68, 116.779, 103.939],
+                                                std = [58.393, 57.12, 57.375])
+            self.coin = ops.CoinFlip(probability = 0.5)
+
+        def define_graph(self):
+            rng = self.coin()
+            self.jpegs, self.labels = self.input(name = "Reader")
+            images = self.decode(self.jpegs)
+            images = self.rrc(images)
+            output = self.cmnp(images, mirror = rng)
+            return [output, self.labels]
+
+    class HybridValPipe(Pipeline):
+        def __init__(self, batch_size, num_threads, device_id, num_gpus):
+            super(HybridValPipe, self).__init__(batch_size, num_threads, device_id, seed = 12 + device_id)
+            self.input = ops.MXNetReader(path = rec_val, index_path=rec_val_idx,
+                                         random_shuffle = False, shard_id = device_id, num_shards = num_gpus)
+            self.decode = ops.nvJPEGDecoder(device = "mixed", output_type = types.RGB)
+            self.rs = ops.Resize(device = "gpu", resize_shorter = 256)
+            self.cmnp = ops.CropMirrorNormalize(device = "gpu",
+                                                output_dtype = types.FLOAT,
+                                                output_layout = types.NCHW,
+                                                crop = (224, 224),
+                                                image_type = types.RGB,
+                                                mean = [123.68, 116.779, 103.939],
+                                                std = [58.393, 57.12, 57.375])
+
+        def define_graph(self):
+            self.jpegs, self.labels = self.input(name = "Reader")
+            images = self.decode(self.jpegs)
+            images = self.rs(images)
+            output = self.cmnp(images)
+            return [output, self.labels]
+
+    trainpipes = [HybridTrainPipe(batch_size=batch_size, num_threads=2,
+                                  device_id = i, num_gpus = num_gpus) for i in range(N)]
+    valpipes = [HybridValPipe(batch_size=batch_size, num_threads=2,
+                              device_id = i, num_gpus = num_gpus) for i in range(N)]
+
+    trainpipes[0].build()
+    valpipes[0].build()
+
+    dali_train_iter = DALIClassificationIterator(trainpipes, trainpipes[0].epoch_size("Reader"))
+    dali_val_iter = DALIClassificationIterator(valpipes, valpipes[0].epoch_size("Reader"))
+
+    def batch_fn(batch, ctx):
+        data = gluon.utils.split_and_load(batch.data[0], ctx_list=ctx, batch_axis=0)
+        label = gluon.utils.split_and_load(batch.label[0], ctx_list=ctx, batch_axis=0)
+        return data, label
+
+    return dali_train_iter, dali_val_iter, batch_fn
+
+
 if opt.use_rec:
-    train_data, val_data, batch_fn = get_data_rec(opt.rec_train, opt.rec_train_idx,
-                                                  opt.rec_val, opt.rec_val_idx,
-                                                  batch_size, num_workers)
+    if opt.use_dali:
+        train_data, val_data, batch_fn = get_data_dali(opt.rec_train, opt.rec_train_idx,
+                                                       opt.rec_val, opt.rec_val_idx,
+                                                       batch_size, num_workers)
+    else:
+        train_data, val_data, batch_fn = get_data_rec(opt.rec_train, opt.rec_train_idx,
+                                                      opt.rec_val, opt.rec_val_idx,
+                                                      batch_size, num_workers)
 else:
     train_data, val_data, batch_fn = get_data_loader(opt.data_dir, batch_size, num_workers)
 
