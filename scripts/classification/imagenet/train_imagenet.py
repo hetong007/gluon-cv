@@ -293,9 +293,9 @@ def get_data_dali(rec_train, rec_train_idx, rec_val, rec_val_idx, batch_size, nu
             return [output, self.labels]
 
     trainpipes = [HybridTrainPipe(batch_size=batch_size, num_threads=2,
-                                  device_id = i, num_gpus = num_gpus) for i in range(N)]
+                                  device_id = i, num_gpus = num_gpus) for i in range(num_gpus)]
     valpipes = [HybridValPipe(batch_size=batch_size, num_threads=2,
-                              device_id = i, num_gpus = num_gpus) for i in range(N)]
+                              device_id = i, num_gpus = num_gpus) for i in range(num_gpus)]
 
     trainpipes[0].build()
     valpipes[0].build()
@@ -304,8 +304,11 @@ def get_data_dali(rec_train, rec_train_idx, rec_val, rec_val_idx, batch_size, nu
     dali_val_iter = DALIClassificationIterator(valpipes, valpipes[0].epoch_size("Reader"))
 
     def batch_fn(batch, ctx):
-        data = gluon.utils.split_and_load(batch.data[0], ctx_list=ctx, batch_axis=0)
-        label = gluon.utils.split_and_load(batch.label[0], ctx_list=ctx, batch_axis=0)
+        data = []
+        label = []
+        for b in batch:
+            data.append(b.data[0])
+            label.append(b.label[0].as_in_context(b.data[0].context))
         return data, label
 
     return dali_train_iter, dali_val_iter, batch_fn
