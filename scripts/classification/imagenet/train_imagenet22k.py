@@ -13,18 +13,10 @@ from gluoncv.utils import makedirs, LRScheduler
 
 # CLI
 parser = argparse.ArgumentParser(description='Train a model for image classification.')
-parser.add_argument('--data-dir', type=str, default='~/.mxnet/datasets/imagenet',
-                    help='training and validation pictures to use.')
-parser.add_argument('--rec-train', type=str, default='~/.mxnet/datasets/imagenet/rec/train.rec',
+parser.add_argument('--rec-train', type=str, default='~/.mxnet/datasets/imagenet/rec/train',
                     help='the training data')
-parser.add_argument('--rec-train-idx', type=str, default='~/.mxnet/datasets/imagenet/rec/train.idx',
-                    help='the index of training data')
-parser.add_argument('--rec-val', type=str, default='~/.mxnet/datasets/imagenet/rec/val.rec',
+parser.add_argument('--rec-val', type=str, default='~/.mxnet/datasets/imagenet/rec/val',
                     help='the validation data')
-parser.add_argument('--rec-val-idx', type=str, default='~/.mxnet/datasets/imagenet/rec/val.idx',
-                    help='the index of validation data')
-parser.add_argument('--use-rec', action='store_true',
-                    help='use image record iter for data input. default is false.')
 parser.add_argument('--batch-size', type=int, default=32,
                     help='training batch size per device (CPU/GPU).')
 parser.add_argument('--dtype', type=str, default='float32',
@@ -144,11 +136,11 @@ logging.info("Total number of workers: %d" % store.num_workers)
 logging.info("This worker's rank: %d" % store.rank)
 
 # Two functions for reading data from record file or raw images
-def get_data_rec(rec_train, rec_train_idx, rec_val, rec_val_idx, batch_size, num_workers):
-    rec_train = os.path.expanduser(rec_train)
-    rec_train_idx = os.path.expanduser(rec_train_idx)
-    rec_val = os.path.expanduser(rec_val)
-    rec_val_idx = os.path.expanduser(rec_val_idx)
+def get_data_rec(rec_train, rec_val, index, batch_size, num_workers):
+    rec_train = os.path.expanduser(rec_train + '-%d.rec'%(index))
+    rec_train_idx = os.path.expanduser(rec_train + '-%d.idx'%(index))
+    rec_val = os.path.expanduser(rec_val + '.rec')
+    rec_val_idx = os.path.expanduser(rec_val + '.idx')
     jitter_param = 0.4
     lighting_param = 0.1
     input_size = opt.input_size
@@ -184,9 +176,6 @@ def get_data_rec(rec_train, rec_train_idx, rec_val, rec_val_idx, batch_size, num
         saturation          = jitter_param,
         contrast            = jitter_param,
         pca_noise           = lighting_param,
-
-        num_parts           = store.num_workers,
-        part_index          = store.rank,
     )
     val_data = mx.io.ImageRecordIter(
         path_imgrec         = rec_val,
@@ -206,77 +195,11 @@ def get_data_rec(rec_train, rec_train_idx, rec_val, rec_val_idx, batch_size, num
     )
     return train_data, val_data, batch_fn
 
-def get_data_loader(data_dir, batch_size, num_workers):
-    normalize = transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-    jitter_param = 0.4
-    lighting_param = 0.1
-    input_size = opt.input_size
-
-    def batch_fn(batch, ctx):
-        data = gluon.utils.split_and_load(batch[0], ctx_list=ctx, batch_axis=0)
-        label = gluon.utils.split_and_load(batch[1], ctx_list=ctx, batch_axis=0)
-        return data, label
-
-    class SplitSampler(gluon.data.sampler.Sampler):
-        """ Split the dataset into `num_parts` parts and sample from the part with index `part_index`
-        Parameters
-        ----------
-        length: int
-          Number of examples in the dataset
-        num_parts: int
-          Partition the data into multiple parts
-        part_index: int
-          The index of the part to read from
-        """
-        def __init__(self, length, num_parts=1, part_index=0):
-            # Compute the length of each partition
-            self.part_len = length // num_parts
-            # Compute the start index for this partition
-            self.start = self.part_len * part_index
-            # Compute the end index for this partition
-            self.end = self.start + self.part_len
-
-        def __iter__(self):
-            # Extract examples between `start` and `end`, shuffle and return them.
-            indices = list(range(self.start, self.end))
-            random.shuffle(indices)
-            return iter(indices)
-
-        def __len__(self):
-            return self.part_len
-
-    transform_train = transforms.Compose([
-        transforms.RandomResizedCrop(input_size),
-        transforms.RandomFlipLeftRight(),
-        transforms.RandomColorJitter(brightness=jitter_param, contrast=jitter_param,
-                                     saturation=jitter_param),
-        transforms.RandomLighting(lighting_param),
-        transforms.ToTensor(),
-        normalize
-    ])
-    transform_test = transforms.Compose([
-        transforms.Resize(256, keep_ratio=True),
-        transforms.CenterCrop(input_size),
-        transforms.ToTensor(),
-        normalize
-    ])
-
-    train_data = gluon.data.DataLoader(
-        imagenet.classification.ImageNet(data_dir, train=True).transform_first(transform_train),
-        batch_size=batch_size, shuffle=True, last_batch='discard', num_workers=num_workers,
-        sampler=SplitSampler(num_training_samples, store.num_workers, store.rank))
-    val_data = gluon.data.DataLoader(
-        imagenet.classification.ImageNet(data_dir, train=False).transform_first(transform_test),
-        batch_size=batch_size, shuffle=False, num_workers=num_workers)
-
-    return train_data, val_data, batch_fn
-
-if opt.use_rec:
-    train_data, val_data, batch_fn = get_data_rec(opt.rec_train, opt.rec_train_idx,
-                                                  opt.rec_val, opt.rec_val_idx,
+train_data_list = []
+for i in range(8):
+    train_data, val_data, batch_fn = get_data_rec(opt.rec_train, opt.rec_val, i,
                                                   batch_size, num_workers)
-else:
-    train_data, val_data, batch_fn = get_data_loader(opt.data_dir, batch_size, num_workers)
+    train_data_list.append(train_data)
 
 if opt.mixup:
     train_metric = mx.metric.RMSE()
@@ -347,9 +270,10 @@ def train(ctx):
     best_val_score = 1
 
     for epoch in range(opt.num_epochs):
+        train_data_ind = (epoch + store.rank) % 8
+        train_data = train_data_list[train_data_ind]
         tic = time.time()
-        if opt.use_rec:
-            train_data.reset()
+        train_data.reset()
         train_metric.reset()
         btic = time.time()
 
