@@ -99,7 +99,7 @@ logger.info(opt)
 
 batch_size = opt.batch_size
 classes = 21841
-num_training_samples = 14197087
+num_training_samples = 14197020
 
 num_gpus = opt.num_gpus
 batch_size *= max(1, num_gpus)
