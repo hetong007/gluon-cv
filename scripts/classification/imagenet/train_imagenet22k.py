@@ -136,11 +136,11 @@ logging.info("Total number of workers: %d" % store.num_workers)
 logging.info("This worker's rank: %d" % store.rank)
 
 # Two functions for reading data from record file or raw images
-def get_data_rec(rec_train, rec_val, index, batch_size, num_workers):
-    rec_train = os.path.expanduser(rec_train + '-%d.rec'%(index))
-    rec_train_idx = os.path.expanduser(rec_train + '-%d.idx'%(index))
-    rec_val = os.path.expanduser(rec_val + '.rec')
-    rec_val_idx = os.path.expanduser(rec_val + '.idx')
+def get_data_rec(rec_train_folder, rec_val_folder, index, batch_size, num_workers):
+    rec_train = os.path.expanduser(rec_train_folder + '-%d.rec'%(index))
+    rec_train_idx = os.path.expanduser(rec_train_folder + '-%d.idx'%(index))
+    rec_val = os.path.expanduser(rec_val_folder + '.rec')
+    rec_val_idx = os.path.expanduser(rec_val_folder + '.idx')
     jitter_param = 0.4
     lighting_param = 0.1
     input_size = opt.input_size
