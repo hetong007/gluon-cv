@@ -195,11 +195,15 @@ def get_data_rec(rec_train_folder, rec_val_folder, index, batch_size, num_worker
     )
     return train_data, val_data, batch_fn
 
+'''
 train_data_list = []
 for i in range(8):
     train_data, val_data, batch_fn = get_data_rec(opt.rec_train, opt.rec_val, i,
                                                   batch_size, num_workers)
     train_data_list.append(train_data)
+'''
+train_data, val_data, batch_fn = get_data_rec(opt.rec_train, opt.rec_val, store.rank,
+                                              batch_size, num_workers)
 
 if opt.mixup:
     train_metric = mx.metric.RMSE()
@@ -270,8 +274,8 @@ def train(ctx):
     best_val_score = 1
 
     for epoch in range(opt.num_epochs):
-        train_data_ind = (epoch + store.rank) % 8
-        train_data = train_data_list[train_data_ind]
+        # train_data_ind = (epoch + store.rank) % 8
+        # train_data = train_data_list[train_data_ind]
         tic = time.time()
         train_data.reset()
         train_metric.reset()
