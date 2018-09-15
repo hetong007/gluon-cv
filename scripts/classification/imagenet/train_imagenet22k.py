@@ -135,9 +135,9 @@ net = get_model(model_name, **kwargs)
 net.cast(opt.dtype)
 
 # Two functions for reading data from record file or raw images
-def get_data_rec(rec_train_folder, rec_val_folder, index, batch_size, num_workers):
-    rec_train = os.path.expanduser(rec_train_folder + '-%d.rec'%(index))
-    rec_train_idx = os.path.expanduser(rec_train_folder + '-%d.idx'%(index))
+def get_data_rec(rec_train_file, rec_train_idx_file, rec_val_folder, index, batch_size, num_workers):
+    rec_train = os.path.expanduser(rec_train_file)
+    rec_train_idx = os.path.expanduser(rec_train_idx_file)
     rec_val = os.path.expanduser(rec_val_folder + '.rec')
     rec_val_idx = os.path.expanduser(rec_val_folder + '.idx')
     jitter_param = 0.4
@@ -197,24 +197,10 @@ def get_data_rec(rec_train_folder, rec_val_folder, index, batch_size, num_worker
 '''
 train_data_list = []
 for i in range(8):
-    train_data, val_data, batch_fn = get_data_rec(opt.rec_train, opt.rec_val, i,
-                                                  batch_size, num_workers)
-    train_data_list.append(train_data)
+    train_data, val_data, batch_fn = get_data_rec(rec_file, idx_file, store.rank,
+                                              batch_size, num_workers)
 '''
-
-delete_cmd = [
-    'rm ',
-    '/media/ramdisk/*'
-]
-subprocess.call(delete_cmd)
-copy_cmd = [
-    'cp',
-    '/home/ubuntu/data/imagenet22k/imagenet22k-' + str(store.rank) + '.*',
-    '/media/ramdisk/'
-]
-subprocess.call(copy_cmd)
-
-train_data, val_data, batch_fn = get_data_rec(opt.rec_train, opt.rec_val, store.rank,
+train_data, val_data, batch_fn = get_data_rec(rec_file, idx_file, opt.rec_val, store.rank,
                                               batch_size, num_workers)
 
 if opt.mixup:
