@@ -109,7 +109,7 @@ if opt.lr_decay_period > 0:
     lr_decay_epoch = list(range(lr_decay_period, opt.num_epochs, lr_decay_period))
 else:
     lr_decay_epoch = [int(i) for i in opt.lr_decay_epoch.split(',')]
-num_batches = num_training_samples // (batch_size * store.rank)
+num_batches = num_training_samples // (batch_size * store.num_workers)
 lr_scheduler = LRScheduler(mode=opt.lr_mode, baselr=opt.lr,
                            niters=num_batches, nepochs=opt.num_epochs,
                            step=lr_decay_epoch, step_factor=opt.lr_decay, power=2,
@@ -212,6 +212,7 @@ copy_cmd = [
     '/home/ubuntu/data/imagenet22k/imagenet22k-' + str(store.rank) + '.*',
     '/media/ramdisk/'
 ]
+subprocess.call(copy_cmd)
 
 train_data, val_data, batch_fn = get_data_rec(opt.rec_train, opt.rec_val, store.rank,
                                               batch_size, num_workers)
