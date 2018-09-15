@@ -98,6 +98,10 @@ batch_size *= max(1, num_gpus)
 context = [mx.gpu(i) for i in range(num_gpus)] if num_gpus > 0 else [mx.cpu()]
 num_workers = opt.num_workers
 
+logging.info("About to create kv!")
+store = mx.kv.create('dist_device_sync')
+logging.info("Total number of workers: %d" % store.num_workers)
+logging.info("This worker's rank: %d" % store.rank)
 
 lr_decay = opt.lr_decay
 lr_decay_period = opt.lr_decay_period
@@ -105,7 +109,7 @@ if opt.lr_decay_period > 0:
     lr_decay_epoch = list(range(lr_decay_period, opt.num_epochs, lr_decay_period))
 else:
     lr_decay_epoch = [int(i) for i in opt.lr_decay_epoch.split(',')]
-num_batches = num_training_samples // batch_size
+num_batches = num_training_samples // (batch_size * store.rank)
 lr_scheduler = LRScheduler(mode=opt.lr_mode, baselr=opt.lr,
                            niters=num_batches, nepochs=opt.num_epochs,
                            step=lr_decay_epoch, step_factor=opt.lr_decay, power=2,
@@ -129,11 +133,6 @@ if opt.dtype != 'float32':
 
 net = get_model(model_name, **kwargs)
 net.cast(opt.dtype)
-
-logging.info("About to create kv!")
-store = mx.kv.create('dist_device_sync')
-logging.info("Total number of workers: %d" % store.num_workers)
-logging.info("This worker's rank: %d" % store.rank)
 
 # Two functions for reading data from record file or raw images
 def get_data_rec(rec_train_folder, rec_val_folder, index, batch_size, num_workers):
@@ -202,6 +201,18 @@ for i in range(8):
                                                   batch_size, num_workers)
     train_data_list.append(train_data)
 '''
+
+delete_cmd = [
+    'rm ',
+    '/media/ramdisk/*'
+]
+subprocess.call(delete_cmd)
+copy_cmd = [
+    'cp',
+    '/home/ubuntu/data/imagenet22k/imagenet22k-' + str(store.rank) + '.*',
+    '/media/ramdisk/'
+]
+
 train_data, val_data, batch_fn = get_data_rec(opt.rec_train, opt.rec_val, store.rank,
                                               batch_size, num_workers)
 
