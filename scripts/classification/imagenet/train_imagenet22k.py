@@ -200,6 +200,13 @@ for i in range(8):
     train_data, val_data, batch_fn = get_data_rec(rec_file, idx_file, store.rank,
                                               batch_size, num_workers)
 '''
+ramdisk_path = '/media/ramdisk/'
+ramdisk_files = os.listdir(ramdisk_path)
+rec_file = [l for l in ramdisk_file if 'rec' in l]
+idx_file = [l for l in ramdisk_file if 'idx' in l]
+rec_file = os.path.join(ramdisk_path, rec_file[0])
+idx_file = os.path.join(ramdisk_path, idx_file[0])
+
 train_data, val_data, batch_fn = get_data_rec(rec_file, idx_file, opt.rec_val, store.rank,
                                               batch_size, num_workers)
 
