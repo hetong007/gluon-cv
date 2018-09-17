@@ -245,8 +245,7 @@ def smooth(label, classes, eta=0.1):
     return smoothed
 
 def test(ctx, val_data):
-    if opt.use_rec:
-        val_data.reset()
+    val_data.reset()
     acc_top1.reset()
     acc_top5.reset()
     for i, batch in enumerate(val_data):
