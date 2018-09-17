@@ -109,7 +109,7 @@ if opt.lr_decay_period > 0:
     lr_decay_epoch = list(range(lr_decay_period, opt.num_epochs, lr_decay_period))
 else:
     lr_decay_epoch = [int(i) for i in opt.lr_decay_epoch.split(',')]
-num_batches = num_training_samples // (batch_size * store.num_workers)
+num_batches = num_training_samples // (batch_size)
 lr_scheduler = LRScheduler(mode=opt.lr_mode, baselr=opt.lr,
                            niters=num_batches, nepochs=opt.num_epochs,
                            step=lr_decay_epoch, step_factor=opt.lr_decay, power=2,
