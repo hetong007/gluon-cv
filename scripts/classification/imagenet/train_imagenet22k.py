@@ -202,8 +202,8 @@ for i in range(8):
 '''
 ramdisk_path = '/media/ramdisk/'
 ramdisk_files = os.listdir(ramdisk_path)
-rec_file = [l for l in ramdisk_file if 'rec' in l]
-idx_file = [l for l in ramdisk_file if 'idx' in l]
+rec_file = [l for l in ramdisk_files if 'rec' in l]
+idx_file = [l for l in ramdisk_files if 'idx' in l]
 rec_file = os.path.join(ramdisk_path, rec_file[0])
 idx_file = os.path.join(ramdisk_path, idx_file[0])
 
