@@ -1,4 +1,4 @@
-import argparse, time, logging, os, pickle
+import argparse, time, logging, os, subprocess
 
 import numpy as np
 import mxnet as mx
@@ -13,18 +13,10 @@ from gluoncv.utils import makedirs, LRScheduler
 
 # CLI
 parser = argparse.ArgumentParser(description='Train a model for image classification.')
-parser.add_argument('--data-dir', type=str, default='~/.mxnet/datasets/imagenet',
-                    help='training and validation pictures to use.')
-parser.add_argument('--rec-train', type=str, default='~/.mxnet/datasets/imagenet/rec/train.rec',
+parser.add_argument('--rec-train', type=str, default='~/.mxnet/datasets/imagenet/rec/train',
                     help='the training data')
-parser.add_argument('--rec-train-idx', type=str, default='~/.mxnet/datasets/imagenet/rec/train.idx',
-                    help='the index of training data')
-parser.add_argument('--rec-val', type=str, default='~/.mxnet/datasets/imagenet/rec/val.rec',
+parser.add_argument('--rec-val', type=str, default='~/.mxnet/datasets/imagenet/rec/val',
                     help='the validation data')
-parser.add_argument('--rec-val-idx', type=str, default='~/.mxnet/datasets/imagenet/rec/val.idx',
-                    help='the index of validation data')
-parser.add_argument('--use-rec', action='store_true',
-                    help='use image record iter for data input. default is false.')
 parser.add_argument('--batch-size', type=int, default=32,
                     help='training batch size per device (CPU/GPU).')
 parser.add_argument('--dtype', type=str, default='float32',
@@ -106,6 +98,10 @@ batch_size *= max(1, num_gpus)
 context = [mx.gpu(i) for i in range(num_gpus)] if num_gpus > 0 else [mx.cpu()]
 num_workers = opt.num_workers
 
+logging.info("About to create kv!")
+store = mx.kv.create('dist_device_sync')
+logging.info("Total number of workers: %d" % store.num_workers)
+logging.info("This worker's rank: %d" % store.rank)
 
 lr_decay = opt.lr_decay
 lr_decay_period = opt.lr_decay_period
@@ -113,7 +109,8 @@ if opt.lr_decay_period > 0:
     lr_decay_epoch = list(range(lr_decay_period, opt.num_epochs, lr_decay_period))
 else:
     lr_decay_epoch = [int(i) for i in opt.lr_decay_epoch.split(',')]
-num_batches = num_training_samples // batch_size
+global_batch_size = batch_size * store.num_workers
+num_batches = num_training_samples // (global_batch_size)
 lr_scheduler = LRScheduler(mode=opt.lr_mode, baselr=opt.lr,
                            niters=num_batches, nepochs=opt.num_epochs,
                            step=lr_decay_epoch, step_factor=opt.lr_decay, power=2,
@@ -139,13 +136,11 @@ net = get_model(model_name, **kwargs)
 net.cast(opt.dtype)
 
 # Two functions for reading data from record file or raw images
-def get_data_rec(rec_train_path, index, rec_val, rec_val_idx, batch_size, num_workers):
-    #rec_train = os.path.expanduser(rec_train)
-    #rec_train_idx = os.path.expanduser(rec_train_idx)
-    rec_train = os.path.expanduser('%s-%d.rec'%(rec_train_path, index))
-    rec_train_idx = os.path.expanduser('%s-%d.idx'%(rec_train_path, index))
-    rec_val = os.path.expanduser(rec_val)
-    rec_val_idx = os.path.expanduser(rec_val_idx)
+def get_data_rec(rec_train_file, rec_train_idx_file, rec_val_folder, index, batch_size, num_workers):
+    rec_train = os.path.expanduser(rec_train_file)
+    rec_train_idx = os.path.expanduser(rec_train_idx_file)
+    rec_val = os.path.expanduser(rec_val_folder + '.rec')
+    rec_val_idx = os.path.expanduser(rec_val_folder + '.idx')
     jitter_param = 0.4
     lighting_param = 0.1
     input_size = opt.input_size
@@ -182,8 +177,6 @@ def get_data_rec(rec_train_path, index, rec_val, rec_val_idx, batch_size, num_wo
         contrast            = jitter_param,
         pca_noise           = lighting_param,
     )
-    if index > 0:
-        return train_data, None, None
     val_data = mx.io.ImageRecordIter(
         path_imgrec         = rec_val,
         path_imgidx         = rec_val_idx,
@@ -202,16 +195,21 @@ def get_data_rec(rec_train_path, index, rec_val, rec_val_idx, batch_size, num_wo
     )
     return train_data, val_data, batch_fn
 
-
+'''
 train_data_list = []
-train_data, val_data, batch_fn = get_data_rec(opt.rec_train, 0,
-                                              opt.rec_val, opt.rec_val_idx,
+for i in range(8):
+    train_data, val_data, batch_fn = get_data_rec(rec_file, idx_file, store.rank,
                                               batch_size, num_workers)
-for i in range(1, 8):
-    train_data, _, _ = get_data_rec(opt.rec_train, i,
-                                    opt.rec_val, opt.rec_val_idx,
-                                    batch_size, num_workers)
-    train_data_list.append(train_data)
+'''
+ramdisk_path = '/media/ramdisk/'
+ramdisk_files = os.listdir(ramdisk_path)
+rec_file = [l for l in ramdisk_files if 'rec' in l]
+idx_file = [l for l in ramdisk_files if 'idx' in l]
+rec_file = os.path.join(ramdisk_path, rec_file[0])
+idx_file = os.path.join(ramdisk_path, idx_file[0])
+
+train_data, val_data, batch_fn = get_data_rec(rec_file, idx_file, opt.rec_val, store.rank,
+                                              batch_size, num_workers)
 
 if opt.mixup:
     train_metric = mx.metric.RMSE()
@@ -227,9 +225,6 @@ if opt.save_dir and save_frequency:
 else:
     save_dir = ''
     save_frequency = 0
-
-with open('1k_to_22k_mapping.pkl', 'rb') as f:
-    class_mapping = pickle.load(f)
 
 def label_transform(label, classes, eta=0.0):
     ind = label.astype('int')
@@ -256,7 +251,6 @@ def test(ctx, val_data):
     acc_top5.reset()
     for i, batch in enumerate(val_data):
         data, label = batch_fn(batch, ctx)
-        map_label = [[class_mapping[l] for l in single_label] for single_label in label]
         outputs = [net(X.astype(opt.dtype, copy=False)) for X in data]
         acc_top1.update(label, outputs)
         acc_top5.update(label, outputs)
@@ -274,7 +268,8 @@ def train(ctx):
         for k, v in net.collect_params('.*beta|.*gamma|.*bias').items():
             v.wd_mult = 0.0
 
-    trainer = gluon.Trainer(net.collect_params(), optimizer, optimizer_params)
+    trainer = gluon.Trainer(net.collect_params(), optimizer, optimizer_params,
+                            kvstore=store, update_on_kvstore=True)
 
     if opt.label_smoothing or opt.mixup:
         L = gluon.loss.SoftmaxCrossEntropyLoss(sparse_label=False)
@@ -282,64 +277,65 @@ def train(ctx):
         L = gluon.loss.SoftmaxCrossEntropyLoss()
 
     best_val_score = 1
+    num_batches = 0
 
     for epoch in range(opt.num_epochs):
+        # train_data_ind = (epoch + store.rank) % 8
+        # train_data = train_data_list[train_data_ind]
         tic = time.time()
+        train_data.reset()
         train_metric.reset()
+        btic = time.time()
 
-        batch_index = 0
-        for train_data in train_data_list:
-            train_data.reset()
-            btic = time.time()
+        for i, batch in enumerate(train_data):
+            num_batches += 1
+            data, label = batch_fn(batch, ctx)
 
-            for batch in train_data:
-                data, label = batch_fn(batch, ctx)
+            if opt.mixup:
+                lam = np.random.beta(opt.mixup_alpha, opt.mixup_alpha)
+                if epoch >= opt.num_epochs - opt.mixup_off_epoch:
+                    lam = 1
+                data_mixup = [lam*X + (1-lam)*X[::-1] for X in data]
 
-                if opt.mixup:
-                    lam = np.random.beta(opt.mixup_alpha, opt.mixup_alpha)
-                    if epoch >= opt.num_epochs - opt.mixup_off_epoch:
-                        lam = 1
-                    data_mixup = [lam*X + (1-lam)*X[::-1] for X in data]
-
-                    label_mixup = []
-                    if opt.label_smoothing:
-                        eta = 0.1
-                    else:
-                        eta = 0.0
-                    for Y in label:
-                        y1 = label_transform(Y, classes, eta)
-                        y2 = label_transform(Y[::-1], classes, eta)
-                        label_mixup.append(lam*y1 + (1-lam)*y2)
-
-                    data = data_mixup
-                    label = label_mixup
-                elif opt.label_smoothing:
-                    label = smooth(label, classes)
-
-                with ag.record():
-                    outputs = [net(X.astype(opt.dtype, copy=False)) for X in data]
-                    loss = [L(yhat, y.astype(opt.dtype, copy=False)) for yhat, y in zip(outputs, label)]
-                for l in loss:
-                    l.backward()
-                trainer.step(batch_size)
-
-                if opt.mixup:
-                    output_softmax = [nd.SoftmaxActivation(out.astype('float32', copy=False)) \
-                                      for out in outputs]
-                    train_metric.update(label, output_softmax)
+                label_mixup = []
+                if opt.label_smoothing:
+                    eta = 0.1
                 else:
-                    train_metric.update(label, outputs)
+                    eta = 0.0
+                for Y in label:
+                    y1 = label_transform(Y, classes, eta)
+                    y2 = label_transform(Y[::-1], classes, eta)
+                    label_mixup.append(lam*y1 + (1-lam)*y2)
 
-                if opt.log_interval and not (batch_index+1)%opt.log_interval:
-                    train_metric_name, train_metric_score = train_metric.get()
-                    logger.info('Epoch[%d] Batch [%d]\tSpeed: %f samples/sec\t%s=%f\tlr=%f'%(
-                                 epoch, batch_index, batch_size*opt.log_interval/(time.time()-btic),
-                                 train_metric_name, train_metric_score, trainer.learning_rate))
-                    btic = time.time()
-                batch_index += 1
+                data = data_mixup
+                label = label_mixup
+            elif opt.label_smoothing:
+                label = smooth(label, classes)
+
+            with ag.record():
+                outputs = [net(X.astype(opt.dtype, copy=False)) for X in data]
+                loss = [L(yhat, y.astype(opt.dtype, copy=False)) for yhat, y in zip(outputs, label)]
+            for l in loss:
+                l.backward()
+            trainer.step(global_batch_size)
+            trainer._optimizer.num_update = num_batches
+
+            if opt.mixup:
+                output_softmax = [nd.SoftmaxActivation(out.astype('float32', copy=False)) \
+                                  for out in outputs]
+                train_metric.update(label, output_softmax)
+            else:
+                train_metric.update(label, outputs)
+
+            if opt.log_interval and not (i+1)%opt.log_interval:
+                train_metric_name, train_metric_score = train_metric.get()
+                logger.info('Epoch[%d] Batch [%d]\tSpeed: %f samples/sec\t%s=%f\tlr=%f'%(
+                             epoch, i, batch_size*opt.log_interval/(time.time()-btic),
+                             train_metric_name, train_metric_score, trainer.learning_rate))
+                btic = time.time()
 
         train_metric_name, train_metric_score = train_metric.get()
-        throughput = int(batch_size * batch_index /(time.time() - tic))
+        throughput = int(batch_size * i /(time.time() - tic))
 
         err_top1_val, err_top5_val = test(ctx, val_data)
 
