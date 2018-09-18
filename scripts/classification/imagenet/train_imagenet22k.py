@@ -109,7 +109,8 @@ if opt.lr_decay_period > 0:
     lr_decay_epoch = list(range(lr_decay_period, opt.num_epochs, lr_decay_period))
 else:
     lr_decay_epoch = [int(i) for i in opt.lr_decay_epoch.split(',')]
-num_batches = num_training_samples // (batch_size)
+global_batch_size = batch_size * store.num_workers
+num_batches = num_training_samples // (global_batch_size)
 lr_scheduler = LRScheduler(mode=opt.lr_mode, baselr=opt.lr,
                            niters=num_batches, nepochs=opt.num_epochs,
                            step=lr_decay_epoch, step_factor=opt.lr_decay, power=2,
@@ -276,6 +277,7 @@ def train(ctx):
         L = gluon.loss.SoftmaxCrossEntropyLoss()
 
     best_val_score = 1
+    num_batches = 0
 
     for epoch in range(opt.num_epochs):
         # train_data_ind = (epoch + store.rank) % 8
@@ -286,6 +288,7 @@ def train(ctx):
         btic = time.time()
 
         for i, batch in enumerate(train_data):
+            num_batches += 1
             data, label = batch_fn(batch, ctx)
 
             if opt.mixup:
@@ -314,7 +317,8 @@ def train(ctx):
                 loss = [L(yhat, y.astype(opt.dtype, copy=False)) for yhat, y in zip(outputs, label)]
             for l in loss:
                 l.backward()
-            trainer.step(batch_size)
+            trainer.step(global_batch_size)
+            trainer._optimizer.num_update = num_batches
 
             if opt.mixup:
                 output_softmax = [nd.SoftmaxActivation(out.astype('float32', copy=False)) \
