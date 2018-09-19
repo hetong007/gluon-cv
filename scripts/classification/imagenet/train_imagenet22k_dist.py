@@ -269,7 +269,7 @@ def train(ctx):
             v.wd_mult = 0.0
 
     trainer = gluon.Trainer(net.collect_params(), optimizer, optimizer_params,
-                            kvstore=store, update_on_kvstore=True)
+                            kvstore=store, update_on_kvstore=False)
 
     if opt.label_smoothing or opt.mixup:
         L = gluon.loss.SoftmaxCrossEntropyLoss(sparse_label=False)
