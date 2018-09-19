@@ -17,8 +17,6 @@ parser.add_argument('--data-dir', type=str, default='~/.mxnet/datasets/imagenet'
                     help='training and validation pictures to use.')
 parser.add_argument('--rec-train', type=str, default='~/.mxnet/datasets/imagenet/rec/train.rec',
                     help='the training data')
-parser.add_argument('--rec-train-idx', type=str, default='~/.mxnet/datasets/imagenet/rec/train.idx',
-                    help='the index of training data')
 parser.add_argument('--rec-val', type=str, default='~/.mxnet/datasets/imagenet/rec/val.rec',
                     help='the validation data')
 parser.add_argument('--rec-val-idx', type=str, default='~/.mxnet/datasets/imagenet/rec/val.idx',
