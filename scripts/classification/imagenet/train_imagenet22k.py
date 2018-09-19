@@ -254,7 +254,7 @@ def test(ctx, val_data):
     acc_top5.reset()
     for i, batch in enumerate(val_data):
         data, label = batch_fn(batch, ctx)
-        map_label = [[class_mapping[l] for l in single_label] for single_label in label]
+        map_label = [[class_mapping[int(l)] for l in single_label.asnumpy()] for single_label in label]
         outputs = [net(X.astype(opt.dtype, copy=False)) for X in data]
         acc_top1.update(label, outputs)
         acc_top5.update(label, outputs)
