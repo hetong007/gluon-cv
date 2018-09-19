@@ -1,4 +1,4 @@
-import argparse, time, logging, os, subprocess
+import argparse, time, logging, os, subprocess, random
 
 import numpy as np
 import mxnet as mx
@@ -88,6 +88,10 @@ logger.addHandler(filehandler)
 logger.addHandler(streamhandler)
 
 logger.info(opt)
+
+mx.random.seed(1024)
+np.random.seed(1024)
+random.seed(1024)
 
 batch_size = opt.batch_size
 classes = 21841
