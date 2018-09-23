@@ -321,8 +321,9 @@ def train(ctx):
                 loss = [L(yhat, y.astype(opt.dtype, copy=False)) for yhat, y in zip(outputs, label)]
             for l in loss:
                 l.backward()
+            lr_scheduler.update(i, epoch)
+            # trainer._optimizer.num_update = num_batches
             trainer.step(global_batch_size)
-            trainer._optimizer.num_update = num_batches
 
             if opt.mixup:
                 output_softmax = [nd.SoftmaxActivation(out.astype('float32', copy=False)) \

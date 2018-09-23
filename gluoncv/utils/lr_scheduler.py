@@ -81,7 +81,7 @@ class LRScheduler(lr_scheduler.LRScheduler):
     def __call__(self, num_update):
         i = num_update % self.niters
         epoch = num_update // self.niters
-        self.update(i, epoch)
+        # self.update(i, epoch)
         return self.learning_rate
 
     def update(self, i, epoch):
