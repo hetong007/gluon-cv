@@ -34,6 +34,16 @@ class BasicBlockV1b(HybridBlock):
                                padding=previous_dilation, dilation=previous_dilation,
                                use_bias=False)
         self.bn2 = norm_layer(**norm_kwargs)
+
+        if use_se:
+            self.se = nn.HybridSequential(prefix='')
+            self.se.add(nn.Conv2D(planes // 4, kernel_size=1, padding=0))
+            self.se.add(nn.Activation('relu'))
+            self.se.add(nn.Conv2D(planes * 4, kernel_size=1, padding=0))
+            self.se.add(nn.Activation('sigmoid'))
+        else:
+            self.se = None
+
         self.downsample = downsample
         self.strides = strides
 
@@ -46,6 +56,11 @@ class BasicBlockV1b(HybridBlock):
 
         out = self.conv2(out)
         out = self.bn2(out)
+
+        if self.se:
+            w = F.contrib.AdaptiveAvgPooling2D(out, output_size=1)
+            w = self.se(w)
+            out = F.broadcast_mul(out, w)
 
         if self.downsample is not None:
             residual = self.downsample(x)
@@ -62,7 +77,7 @@ class BottleneckV1b(HybridBlock):
     expansion = 4
     def __init__(self, planes, strides=1, dilation=1,
                  downsample=None, previous_dilation=1, norm_layer=None,
-                 norm_kwargs={}, last_gamma=False, **kwargs):
+                 norm_kwargs={}, last_gamma=False, use_se=False, **kwargs):
         super(BottleneckV1b, self).__init__()
         self.conv1 = nn.Conv2D(channels=planes, kernel_size=1,
                                use_bias=False)
