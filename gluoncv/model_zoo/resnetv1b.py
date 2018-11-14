@@ -2,18 +2,52 @@
 # pylint: disable=arguments-differ,unused-argument,missing-docstring,dangerous-default-value
 from __future__ import division
 
+import mxnet as mx
+from mxnet import autograd as ag
 from mxnet.context import cpu
 from mxnet.gluon.block import HybridBlock
 from mxnet.gluon import nn
 from mxnet.gluon.nn import BatchNorm
 
-__all__ = ['ResNetV1b', 'resnet18_v1b', 'resnet34_v1b',
+__all__ = ['DropBlock2D', 'ResNetV1b', 'resnet18_v1b', 'resnet34_v1b',
            'resnet50_v1b', 'resnet101_v1b',
            'resnet152_v1b', 'BasicBlockV1b', 'BottleneckV1b',
            'resnet50_v1c', 'resnet101_v1c', 'resnet152_v1c',
            'resnet50_v1d', 'resnet101_v1d', 'resnet152_v1d',
            'resnet50_v1e', 'resnet101_v1e', 'resnet152_v1e',
-           'resnet50_v1s', 'resnet101_v1s', 'resnet152_v1s']
+           'resnet50_v1s', 'resnet101_v1s', 'resnet152_v1s',
+           'resnet50_v1z']
+
+class DropBlock2D(HybridBlock):
+    def __init__(self, channels, feat_size, keep_prob=1, block_size=7):
+        super(DropBlock2D, self).__init__()
+        self.feat_size = feat_size
+        self.keep_prob = self.params.get('keep_prob', shape=(1),
+                                         init=mx.initializer.Constant(keep_prob),
+                                         allow_deferred_init=True)
+        self.block_size = block_size
+        self.conv = nn.Conv2D(channels, block_size,
+                              padding=2*(block_size//2), groups=channels)
+
+    def hybrid_forward(self, F, x, keep_prob):
+        if not ag.is_training():
+            return x
+
+        gamma = 1. / (self.block_size ** 2)
+        for fs in self.feat_size:
+            gamma *= fs / (fs - self.block_size + 1)
+
+        gamma = (1 - keep_prob) / (self.block_size ** 2)
+
+        x_slice = F.slice(x, begin=(0, 0, self.block_size // 2, self.block_size // 2),
+                          end=(None, None, -(self.block_size // 2), -(self.block_size // 2)))
+        M = F.broadcast_lesser(F.random.uniform_like(x_slice), gamma)
+        mask = self.conv(M) == 0
+
+        out = F.broadcast_mul(x, mask)
+        normalizer = F.ones_like(mask).sum((1,2,3)) / mask.sum((1,2,3))
+        out = F.broadcast_mul(out, normalizer.expand_dims(1).expand_dims(2).expand_dims(3))
+        return out
 
 class BasicBlockV1b(HybridBlock):
     """ResNetV1b BasicBlockV1b
@@ -59,7 +93,8 @@ class BottleneckV1b(HybridBlock):
     expansion = 4
     def __init__(self, planes, strides=1, dilation=1,
                  downsample=None, previous_dilation=1, norm_layer=None,
-                 norm_kwargs={}, last_gamma=False, **kwargs):
+                 norm_kwargs={}, last_gamma=False,
+                 dropblock=False, feat_size=(224, 224), **kwargs):
         super(BottleneckV1b, self).__init__()
         self.conv1 = nn.Conv2D(channels=planes, kernel_size=1,
                                use_bias=False)
@@ -78,6 +113,17 @@ class BottleneckV1b(HybridBlock):
         self.downsample = downsample
         self.dilation = dilation
         self.strides = strides
+        self.dropblock = dropblock
+
+        if self.dropblock:
+            if strides > 1:
+                nfeat_size = [fs / strides for fs in feat_size]
+            else:
+                nfeat_size = feat_size
+            self.drop1 = DropBlock2D(channels=planes, feat_size=feat_size)
+            self.drop2 = DropBlock2D(channels=planes, feat_size=nfeat_size)
+            self.drop3 = DropBlock2D(channels=planes * 4, feat_size=nfeat_size)
+            self.drop4 = DropBlock2D(channels=planes * 4, feat_size=nfeat_size)
 
     def hybrid_forward(self, F, x):
         residual = x
@@ -85,16 +131,24 @@ class BottleneckV1b(HybridBlock):
         out = self.conv1(x)
         out = self.bn1(out)
         out = self.relu1(out)
+        if self.dropblock:
+            out = self.drop1(out)
 
         out = self.conv2(out)
         out = self.bn2(out)
         out = self.relu2(out)
+        if self.dropblock:
+            out = self.drop2(out)
 
         out = self.conv3(out)
         out = self.bn3(out)
+        if self.dropblock:
+            out = self.drop3(out)
 
         if self.downsample is not None:
-            residual = self.downsample(x)
+            residual = self.downsample(residual)
+        if self.dropblock:
+            residual = self.drop4(residual)
 
         out = out + residual
         out = self.relu3(out)
@@ -142,8 +196,8 @@ class ResNetV1b(HybridBlock):
     # pylint: disable=unused-variable
     def __init__(self, block, layers, classes=1000, dilated=False, norm_layer=BatchNorm,
                  norm_kwargs={}, last_gamma=False, deep_stem=False, stem_width=32,
-                 avg_down=False, final_drop=0.0, use_global_stats=False,
-                 name_prefix='', **kwargs):
+                 avg_down=False, final_drop=0.0, use_global_stats=False, dropblock=False,
+                 input_size=224, name_prefix='', **kwargs):
         self.inplanes = stem_width*2 if deep_stem else 64
         super(ResNetV1b, self).__init__(prefix=name_prefix)
         self.norm_kwargs = norm_kwargs
@@ -169,23 +223,29 @@ class ResNetV1b(HybridBlock):
             self.relu = nn.Activation('relu')
             self.maxpool = nn.MaxPool2D(pool_size=3, strides=2, padding=1)
             self.layer1 = self._make_layer(1, block, 64, layers[0], avg_down=avg_down,
-                                           norm_layer=norm_layer, last_gamma=last_gamma)
+                                           norm_layer=norm_layer, last_gamma=last_gamma,
+                                           dropblock=False, feat_size=(input_size/4, input_size/4))
             self.layer2 = self._make_layer(2, block, 128, layers[1], strides=2, avg_down=avg_down,
-                                           norm_layer=norm_layer, last_gamma=last_gamma)
+                                           norm_layer=norm_layer, last_gamma=last_gamma,
+                                           dropblock=False, feat_size=(input_size/4, input_size/4))
             if dilated:
                 self.layer3 = self._make_layer(3, block, 256, layers[2], strides=1, dilation=2,
                                                avg_down=avg_down, norm_layer=norm_layer,
-                                               last_gamma=last_gamma)
+                                               last_gamma=last_gamma, dropblock=dropblock,
+                                               feat_size=(input_size/8, input_size/8))
                 self.layer4 = self._make_layer(4, block, 512, layers[3], strides=1, dilation=4,
                                                avg_down=avg_down, norm_layer=norm_layer,
-                                               last_gamma=last_gamma)
+                                               last_gamma=last_gamma, dropblock=dropblock,
+                                               feat_size=(input_size/8, input_size/8))
             else:
                 self.layer3 = self._make_layer(3, block, 256, layers[2], strides=2,
                                                avg_down=avg_down, norm_layer=norm_layer,
-                                               last_gamma=last_gamma)
+                                               last_gamma=last_gamma, dropblock=dropblock,
+                                               feat_size=(input_size/8, input_size/8))
                 self.layer4 = self._make_layer(4, block, 512, layers[3], strides=2,
                                                avg_down=avg_down, norm_layer=norm_layer,
-                                               last_gamma=last_gamma)
+                                               last_gamma=last_gamma, dropblock=dropblock,
+                                               feat_size=(input_size/16, input_size/16))
             self.avgpool = nn.GlobalAvgPool2D()
             self.flat = nn.Flatten()
             self.drop = None
@@ -194,7 +254,8 @@ class ResNetV1b(HybridBlock):
             self.fc = nn.Dense(in_units=512 * block.expansion, units=classes)
 
     def _make_layer(self, stage_index, block, planes, blocks, strides=1, dilation=1,
-                    avg_down=False, norm_layer=None, last_gamma=False):
+                    avg_down=False, norm_layer=None, last_gamma=False,
+                    dropblock=False, feat_size=(224, 224)):
         downsample = None
         if strides != 1 or self.inplanes != planes * block.expansion:
             downsample = nn.HybridSequential(prefix='down%d_'%stage_index)
@@ -220,20 +281,25 @@ class ResNetV1b(HybridBlock):
                 layers.add(block(planes, strides, dilation=1,
                                  downsample=downsample, previous_dilation=dilation,
                                  norm_layer=norm_layer, norm_kwargs=self.norm_kwargs,
-                                 last_gamma=last_gamma))
+                                 last_gamma=last_gamma, dropblock=dropblock, feat_size=feat_size))
             elif dilation == 4:
                 layers.add(block(planes, strides, dilation=2,
                                  downsample=downsample, previous_dilation=dilation,
                                  norm_layer=norm_layer, norm_kwargs=self.norm_kwargs,
-                                 last_gamma=last_gamma))
+                                 last_gamma=last_gamma, dropblock=dropblock, feat_size=feat_size))
             else:
                 raise RuntimeError("=> unknown dilation size: {}".format(dilation))
 
             self.inplanes = planes * block.expansion
+            if strides > 1:
+                nfeat_size = [fs / strides for fs in feat_size]
+            else:
+                nfeat_size = feat_size
             for i in range(1, blocks):
                 layers.add(block(planes, dilation=dilation,
                                  previous_dilation=dilation, norm_layer=norm_layer,
-                                 norm_kwargs=self.norm_kwargs, last_gamma=last_gamma))
+                                 norm_kwargs=self.norm_kwargs, last_gamma=last_gamma,
+                                 dropblock=dropblock, feat_size=nfeat_size))
 
         return layers
 
@@ -798,3 +864,70 @@ def resnet152_v1s(pretrained=False, root='~/.mxnet/models', ctx=cpu(0), **kwargs
         model.classes = attrib.classes
         model.classes_long = attrib.classes_long
     return model
+
+def resnet50_v1z(pretrained=False, root='~/.mxnet/models', ctx=cpu(0), **kwargs):
+    """Constructs a ResNetV1d-50 model.
+
+    Parameters
+    ----------
+    pretrained : bool or str
+        Boolean value controls whether to load the default pretrained weights for model.
+        String value represents the hashtag for a certain version of pretrained weights.
+    root : str, default '~/.mxnet/models'
+        Location for keeping the model parameters.
+    ctx : Context, default CPU
+        The context in which to load the pretrained weights.
+    dilated: bool, default False
+        Whether to apply dilation strategy to ResNetV1b, yilding a stride 8 model.
+    norm_layer : object
+        Normalization layer used in backbone network (default: :class:`mxnet.gluon.norm_layer`;
+    """
+    model = ResNetV1b(BottleneckV1b, [3, 4, 6, 3], deep_stem=True, avg_down=True,
+                      name_prefix='resnetv1d_', dropblock=True, **kwargs)
+    if pretrained:
+        from .model_store import get_model_file
+        model.load_parameters(get_model_file('resnet%d_v%dd'%(50, 1),
+                                             tag=pretrained, root=root), ctx=ctx)
+        from ..data import ImageNet1kAttr
+        attrib = ImageNet1kAttr()
+        model.synset = attrib.synset
+        model.classes = attrib.classes
+        model.classes_long = attrib.classes_long
+    return model
+
+def resnet50_v1z(pretrained=False, root='~/.mxnet/models', ctx=cpu(0), **kwargs):
+    """Constructs a ResNetV1b-50 model.
+
+    Parameters
+    ----------
+    pretrained : bool or str
+        Boolean value controls whether to load the default pretrained weights for model.
+        String value represents the hashtag for a certain version of pretrained weights.
+    root : str, default '~/.mxnet/models'
+        Location for keeping the model parameters.
+    ctx : Context, default CPU
+        The context in which to load the pretrained weights.
+    dilated: bool, default False
+        Whether to apply dilation strategy to ResNetV1b, yilding a stride 8 model.
+    norm_layer : object
+        Normalization layer used in backbone network (default: :class:`mxnet.gluon.BatchNorm`;
+    last_gamma : bool, default False
+        Whether to initialize the gamma of the last BatchNorm layer in each bottleneck to zero.
+    use_global_stats : bool, default False
+        Whether forcing BatchNorm to use global statistics instead of minibatch statistics;
+        optionally set to True if finetuning using ImageNet classification pretrained models.
+    """
+    model = ResNetV1b(BottleneckV1b, [3, 4, 6, 3], name_prefix='resnetv1z_', dropblock=True, **kwargs)
+    if pretrained:
+        from .model_store import get_model_file
+        model.load_parameters(get_model_file('resnet%d_v%dz'%(50, 1),
+                                             tag=pretrained, root=root), ctx=ctx)
+        from ..data import ImageNet1kAttr
+        attrib = ImageNet1kAttr()
+        model.synset = attrib.synset
+        model.classes = attrib.classes
+        model.classes_long = attrib.classes_long
+    return model
+
+
+

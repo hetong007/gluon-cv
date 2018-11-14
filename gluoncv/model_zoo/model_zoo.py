@@ -139,6 +139,7 @@ _models = {
     'resnet50_v1s': resnet50_v1s,
     'resnet101_v1s': resnet101_v1s,
     'resnet152_v1s': resnet152_v1s,
+    'resnet50_v1z': resnet50_v1z,
     'resnext50_32x4d': resnext50_32x4d,
     'resnext101_32x4d': resnext101_32x4d,
     'resnext101_64x4d': resnext101_64x4d,

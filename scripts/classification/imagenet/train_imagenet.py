@@ -324,6 +324,9 @@ def train(ctx):
         L = gluon.loss.SoftmaxCrossEntropyLoss()
 
     best_val_score = 1
+    keep_prob = 1
+    target_keep_prob = 0.85
+    delta_keep_prob = (keep_prob - target_keep_prob) / opt.num_epochs
 
     for epoch in range(opt.resume_epoch, opt.num_epochs):
         tic = time.time()
@@ -331,6 +334,12 @@ def train(ctx):
             train_data.reset()
         train_metric.reset()
         btic = time.time()
+        keep_prob -= delta_keep_prob
+
+        for k, v in net.collect_params('.*keep_prob').items():
+            v.set_data(nd.array([keep_prob]))
+
+        # net.hybridize()
 
         for i, batch in enumerate(train_data):
             data, label = batch_fn(batch, ctx)
@@ -358,6 +367,9 @@ def train(ctx):
                 l.backward()
             lr_scheduler.update(i, epoch)
             trainer.step(batch_size)
+
+            # import pdb; pdb.set_trace()
+            outputs = [o.astype('float32', copy=False) for o in outputs]
 
             if opt.mixup:
                 output_softmax = [nd.SoftmaxActivation(out.astype('float32', copy=False)) \
@@ -399,8 +411,8 @@ def train(ctx):
         trainer.save_states('%s/imagenet-%s-%d.states'%(save_dir, model_name, opt.num_epochs-1))
 
 def main():
-    if opt.mode == 'hybrid':
-        net.hybridize(static_alloc=True, static_shape=True)
+    # if opt.mode == 'hybrid':
+    #     net.hybridize(static_alloc=True, static_shape=True)
     train(context)
 
 if __name__ == '__main__':
