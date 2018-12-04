@@ -318,7 +318,7 @@ if opt.use_rec:
     if opt.use_dali:
         train_data, val_data, batch_fn = get_data_dali(opt.rec_train, opt.rec_train_idx,
                                                        opt.rec_val, opt.rec_val_idx,
-                                                       batch_size, num_workers)
+                                                       batch_size / max(1, num_gpus), num_workers)
     else:
         train_data, val_data, batch_fn = get_data_rec(opt.rec_train, opt.rec_train_idx,
                                                       opt.rec_val, opt.rec_val_idx,
