@@ -23,8 +23,7 @@ class DropBlock2D(HybridBlock):
         super(DropBlock2D, self).__init__()
         self.feat_size = feat_size
         self.keep_prob = self.params.get('keep_prob', shape=(1),
-                                         init=mx.initializer.Constant(keep_prob),
-                                         allow_deferred_init=True)
+                                         init=mx.initializer.Constant(keep_prob))
         self.block_size = block_size
         self.conv = nn.Conv2D(channels, block_size,
                               padding=2*(block_size//2), groups=channels)
@@ -38,10 +37,10 @@ class DropBlock2D(HybridBlock):
             gamma *= fs / (fs - self.block_size + 1)
 
         gamma = (1 - keep_prob) / (self.block_size ** 2)
-
         x_slice = F.slice(x, begin=(0, 0, self.block_size // 2, self.block_size // 2),
                           end=(None, None, -(self.block_size // 2), -(self.block_size // 2)))
-        M = F.broadcast_lesser(F.random.uniform_like(x_slice), gamma)
+        x_unif = F.random.uniform_like(x_slice)
+        M = F.broadcast_lesser(x_unif, gamma)
         mask = self.conv(M) == 0
 
         out = F.broadcast_mul(x, mask)

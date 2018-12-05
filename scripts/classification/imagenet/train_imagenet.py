@@ -339,7 +339,7 @@ def train(ctx):
         for k, v in net.collect_params('.*keep_prob').items():
             v.set_data(nd.array([keep_prob]))
 
-        # net.hybridize()
+        net.hybridize()
 
         for i, batch in enumerate(train_data):
             data, label = batch_fn(batch, ctx)
@@ -368,7 +368,6 @@ def train(ctx):
             lr_scheduler.update(i, epoch)
             trainer.step(batch_size)
 
-            # import pdb; pdb.set_trace()
             outputs = [o.astype('float32', copy=False) for o in outputs]
 
             if opt.mixup:
@@ -411,8 +410,8 @@ def train(ctx):
         trainer.save_states('%s/imagenet-%s-%d.states'%(save_dir, model_name, opt.num_epochs-1))
 
 def main():
-    # if opt.mode == 'hybrid':
-    #     net.hybridize(static_alloc=True, static_shape=True)
+    if opt.mode == 'hybrid':
+        net.hybridize(static_alloc=True, static_shape=True)
     train(context)
 
 if __name__ == '__main__':
