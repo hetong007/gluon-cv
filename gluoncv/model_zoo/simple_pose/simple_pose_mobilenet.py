@@ -105,10 +105,10 @@ class SimplePoseMobileNet(HybridBlock):
 
         return x
 
-def get_simple_pose_mobilenet(base_name, pretrained=False, ctx=cpu(),
+def get_simple_pose_mobilenet(base_name, feature_ind, pretrained=False, ctx=cpu(),
                               root='~/.mxnet/models', **kwargs):
 
-    net = SimplePoseMobileNet(base_name, **kwargs)
+    net = SimplePoseMobileNet(base_name, feature_ind, **kwargs)
 
     if pretrained:
         from ..model_store import get_model_file
