@@ -22,7 +22,7 @@ import gluoncv as gcv
 
 class SimplePoseMobileNet(HybridBlock):
 
-    def __init__(self, base_name='mobilenet1_0',
+    def __init__(self, base_name='mobilenet1_0', features_ind=81,
                  pretrained_base=False, pretrained_ctx=cpu(),
                  num_joints=17,
                  num_deconv_layers=3,
@@ -35,7 +35,7 @@ class SimplePoseMobileNet(HybridBlock):
         base_network = get_model(base_name, pretrained=pretrained_base, ctx=pretrained_ctx,
                                  norm_layer=gcv.nn.BatchNormCudnnOff)
 
-        self.mobilenet = base_network.features
+        self.mobilenet = base_network.features[:features_ind]
         self.deconv_with_bias = deconv_with_bias
 
         # used for deconv layers
@@ -130,7 +130,7 @@ def simple_pose_mobilenet1_0(**kwargs):
     root : str, default '$MXNET_HOME/models'
         Location for keeping the model parameters.
     """
-    return get_simple_pose_mobilenet('mobilenet1.0', **kwargs)
+    return get_simple_pose_mobilenet('mobilenet1.0', 81, **kwargs)
 
 def simple_pose_mobilenet_v2_1_0(**kwargs):
     r"""MobileNet v2 1.0 backbone model from `"Simple Baselines for Human Pose Estimation and Tracking"
@@ -145,7 +145,7 @@ def simple_pose_mobilenet_v2_1_0(**kwargs):
     root : str, default '$MXNET_HOME/models'
         Location for keeping the model parameters.
     """
-    return get_simple_pose_mobilenet('mobilenetv2_1.0', **kwargs)
+    return get_simple_pose_mobilenet('mobilenetv2_1.0', 23, **kwargs)
 
 def simple_pose_mobilenet_v3_large(**kwargs):
     r"""MobileNet v3 large backbone model from `"Simple Baselines for Human Pose Estimation and Tracking"
@@ -160,4 +160,4 @@ def simple_pose_mobilenet_v3_large(**kwargs):
     root : str, default '$MXNET_HOME/models'
         Location for keeping the model parameters.
     """
-    return get_simple_pose_mobilenet('mobilenetv3_large', **kwargs)
+    return get_simple_pose_mobilenet('mobilenetv3_large', 21, **kwargs)
