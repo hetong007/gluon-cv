@@ -25,6 +25,7 @@ from .resnetv1b import *
 from .resnext import *
 from .senet import *
 from .simple_pose.simple_pose_resnet import *
+from .simple_pose.simple_pose_mobilenet import *
 from .squeezenet import *
 from .ssd import *
 from .vgg import *
@@ -198,6 +199,9 @@ _models = {
     'simple_pose_resnet50_v1d': simple_pose_resnet50_v1d,
     'simple_pose_resnet101_v1d': simple_pose_resnet101_v1d,
     'simple_pose_resnet152_v1d': simple_pose_resnet152_v1d,
+    'simple_pose_mobilenet1.0': simple_pose_mobilenet1_0,
+    'simple_pose_mobilenetv2_1.0': simple_pose_mobilenet_v2_1_0,
+    'simple_pose_mobilenetv3_large': simple_pose_mobilenet_v3_large,
     'residualattentionnet56': residualattentionnet56,
     'residualattentionnet92': residualattentionnet92,
     'residualattentionnet128': residualattentionnet128,
