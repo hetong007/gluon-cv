@@ -57,6 +57,20 @@ def tsn_mp_batchify_fn(data):
         return nd.array(data, dtype=data.dtype,
                         ctx=context.Context('cpu_shared', 0))
 
+def dgl_mp_batchify_fn(data):
+    """Collate data into batch. Use shared memory for stacking.
+    Modify default batchify function for temporal segment networks.
+    Change `nd.stack` to `dgl.batch` since batch dimension already exists.
+    """
+    try_import('dgl')
+    if isinstance(data[0], dgl.DGLGraph):
+        return dgl.batch(data)
+    elif isinstance(data[0], tuple):
+        data = zip(*data)
+        return [dgl_mp_batchify_fn(i) for i in data]
+    else:
+        return data
+
 class DetectionDataLoader(DataLoader):
     """Data loader for detection dataset.
 

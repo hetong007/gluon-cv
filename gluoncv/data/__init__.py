@@ -24,6 +24,7 @@ from .kinetics400.classification import Kinetics400, Kinetics400Attr
 from .somethingsomethingv2.classification import SomethingSomethingV2, SomethingSomethingV2Attr
 from .hmdb51.classification import HMDB51, HMDB51Attr
 from .sampler import SplitSampler
+from .visualgenome.relation import VGRelation
 
 datasets = {
     'ade20k': ADE20KSegmentation,
