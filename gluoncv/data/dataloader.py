@@ -8,6 +8,7 @@ from mxnet import nd
 from mxnet import context
 from mxnet.gluon.data.dataloader import DataLoader, _MultiWorkerIter
 from mxnet.gluon.data.dataloader import default_mp_batchify_fn, default_batchify_fn
+from ..utils.filesystem import try_import
 
 def default_pad_batchify_fn(data):
     """Collate data into batch, labels are padded to same shape"""
@@ -62,14 +63,17 @@ def dgl_mp_batchify_fn(data):
     Modify default batchify function for temporal segment networks.
     Change `nd.stack` to `dgl.batch` since batch dimension already exists.
     """
-    try_import('dgl')
-    if isinstance(data[0], dgl.DGLGraph):
-        return dgl.batch(data)
-    elif isinstance(data[0], tuple):
+    dgl = try_import('dgl')
+    if isinstance(data[0], dgl.DGLGraph) or data[0] is None:
+        return [d for d in data if isinstance(d, dgl.DGLGraph)]
+    elif isinstance(data, tuple):
         data = zip(*data)
         return [dgl_mp_batchify_fn(i) for i in data]
     else:
-        return data
+        import pdb;pdb.set_trace()
+        data = np.asarray(data)
+        return nd.array(data, dtype=data.dtype,
+                        ctx=context.Context('cpu_shared', 0))
 
 class DetectionDataLoader(DataLoader):
     """Data loader for detection dataset.
