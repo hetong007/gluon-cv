@@ -88,10 +88,13 @@ nepoch = 15
 net = EdgeGCN(in_feats=1024, n_hidden=100, n_classes=50, n_layers=3, activation=nd.relu,
               box_feat_ext='mobilenet1.0', ctx=ctx)
 # net.initialize(ctx=ctx)
+'''
 net._box_feat_ext.hybridize()
 net.edge_mlp.initialize(ctx=ctx)
 net.edge_link_mlp.initialize(ctx=ctx)
 net.layers.initialize(ctx=ctx)
+'''
+net.load_parameters('params/model-14.params', ctx=ctx)
 trainer = gluon.Trainer(net.collect_params(), 'adam', 
                         {'learning_rate': 0.01, 'wd': 0.00001})
 for k, v in net._box_feat_ext.collect_params().items():
@@ -145,12 +148,14 @@ train_metric_auc = AUCMetric()
 # dataset and dataloader
 vg = gcv.data.VGRelation(balancing='weight')
 
-train_data = gluon.data.DataLoader(vg, batch_size=2, shuffle=True, num_workers=8,
+train_data = gluon.data.DataLoader(vg, batch_size=1, shuffle=False, num_workers=0,
                                    batchify_fn=gcv.data.dataloader.dgl_mp_batchify_fn)
 
 save_dir = 'params'
 batch_verbose_freq = 10000
 for epoch in range(nepoch):
+    if epoch > 0:
+        break
     loss_val = 0
     tic = time.time()
     btic = time.time()
@@ -160,6 +165,7 @@ for epoch in range(nepoch):
     train_metric_auc.reset()
     if epoch == 5 or epoch == 10:
         trainer.set_learning_rate(trainer.learning_rate*0.1)
+    result = []
     for i, g_list in enumerate(train_data):
         if len(g_list) == 0:
             continue
@@ -174,31 +180,33 @@ for epoch in range(nepoch):
         link_ind = np.where(G.edata['link'].asnumpy() == 1)[0]
         G.edata['link'] = G.edata['link'].as_in_context(ctx)
         G.edata['weights'] = G.edata['weights'].expand_dims(1).as_in_context(ctx)
-        with mx.autograd.record():
-            G = net(G)
-            loss = L_rel(G.edata['preds'], G.edata['classes'], G.edata['link']) + \
-                   L_link(G.edata['link_preds'], G.edata['link'], G.edata['weights'])
 
-        loss.backward()
-        trainer.step(1)
-        loss_val += loss.mean().asscalar()
-        train_metric.update([G.edata['classes'][link_ind]], [G.edata['preds'][link_ind]])
-        train_metric_top5.update([G.edata['classes'][link_ind]], [G.edata['preds'][link_ind]])
-        train_metric_f1.update([G.edata['link']], [G.edata['link_preds']])
-        train_metric_auc.update([G.edata['link']], [G.edata['link_preds']])
-        if (i+1) % batch_verbose_freq == 0:
-            _, acc = train_metric.get()
-            _, acc_top5 = train_metric_top5.get()
-            _, f1 = train_metric_f1.get()
-            _, auc = train_metric_auc.get()
-            logger.info('Epoch[%d] Batch [%d] \ttime: %d\tloss=%.6f\tacc=%.6f\tacc-top5=%.6f\tf1=%.6f\tauc=%.6f'%(
-                        epoch, i, int(time.time() - btic), loss_val / (i+1), acc, acc_top5, f1, auc))
-            btic = time.time()
-    _, acc = train_metric.get()
-    _, acc_top5 = train_metric_top5.get()
-    _, f1 = train_metric_f1.get()
-    _, auc = train_metric_auc.get()
-    logger.info('Epoch[%d] \ttime: %d\tloss=%.6f\tacc=%.6f\tacc-top5=%.6f\tf1=%.6f\tauc=%.6f\n'%(
-                epoch, int(time.time() - tic), loss_val / (i+1), acc, acc_top5, f1, auc))
-    net.save_parameters('%s/model-%d.params'%(save_dir, epoch))
+        # debug mode
+        G = net(G)
+        link_preds = G.edata['link_preds'].asnumpy()
+        link_labels = G.edata['link']
+        preds = G.edata['preds'].asnumpy()
+        label = G.edata['classes'].asnumpy()
+        bbox = G.ndata['bbox'].asnumpy()
+        image = G.ndata['images'][0].asnumpy()
+        img_id = G.ndata['img_id'].asnumpy()
+        node_class_ids = G.ndata['node_class_ids'].asnumpy()
+        inds = np.flip(np.argsort(link_preds[:,1]))
+        node_ids = G.find_edges(inds)
+        node_src = node_ids[0].asnumpy()
+        node_dst = node_ids[1].asnumpy()
+        link_preds = link_preds[inds]
+        link_labels = link_labels[inds]
+        preds = preds[inds]
+        label = label[inds]
+        node_class_dict = vg._obj_classes_dict
+        edge_class_dict = vg._relations_dict
+        result.append((node_src, node_dst, link_preds, link_labels, preds, label,
+                       bbox, node_class_ids, node_class_dict, edge_class_dict, image, img_id))
+        print(i)
+        if i >= 0:
+            import pickle
+            with open('result.pkl', 'wb') as f:
+                pickle.dump(result, f)
+            break
 

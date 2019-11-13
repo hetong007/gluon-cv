@@ -34,7 +34,7 @@ class VGRelation(VisionDataset):
     """
 
     def __init__(self, root=os.path.join('~', '.mxnet', 'datasets', 'visualgenome'),
-                 top_frequent_rel=50, top_frequent_obj=100, top_frequent_pair=500, balancing='sample'):
+                 top_frequent_rel=50, top_frequent_obj=150, top_frequent_pair=500, balancing='sample'):
         super(VGRelation, self).__init__(root)
         self._im_shapes = {}
         self._root = os.path.expanduser(root)
@@ -86,12 +86,12 @@ class VGRelation(VisionDataset):
             obj_set += obj.split('_')
         obj_set = set(obj_set)
         '''
-        self._relations = ['none'] + list(rel_set)
+        self._relations = sorted(list(rel_set))
         self._relations_dict = {}
         for i, rel in enumerate(self._relations):
             self._relations_dict[rel] = i
 
-        self._obj_classes = ['others'] + list(obj_set)
+        self._obj_classes = ['others'] + sorted(list(obj_set))
         self._obj_classes_dict = {}
         for i, obj in enumerate(self._obj_classes):
             self._obj_classes_dict[obj] = i
@@ -180,10 +180,10 @@ class VGRelation(VisionDataset):
             edges['link'].append(link)
         n_classes = len(self._obj_classes_dict)
         eta = 0.1
-        node_class = node_class.one_hot(n_classes, on_value = 1 - eta + eta/n_classes, off_value = eta / n_classes)
-        return edges, bbox, node_class
+        node_class_vec = node_class.one_hot(n_classes, on_value = 1 - eta + eta/n_classes, off_value = eta / n_classes)
+        return edges, bbox, node_class, node_class_vec
 
-    def _build_complete_graph(self, edges, bbox, node_class, img):
+    def _build_complete_graph(self, edges, bbox, node_class, node_class_vec, img, img_id):
         N = bbox.shape[0]
         g = dgl.DGLGraph()
         g.add_nodes(N)
@@ -203,7 +203,8 @@ class VGRelation(VisionDataset):
         bbox[:,2] /= bbox[0, 2]
         bbox[:,3] /= bbox[0, 3]
         g.ndata['bbox'] = bbox
-        g.ndata['node_class'] = node_class
+        g.ndata['node_class_ids'] = node_class
+        g.ndata['node_class_vec'] = node_class_vec
 
         # assign class label to edges
         eids = g.edge_ids(edges['src'], edges['dst'])
@@ -246,6 +247,9 @@ class VGRelation(VisionDataset):
         img_list = crop_resize_normalize(img, bbox_list, (224, 224))
         imgs = mx.nd.stack(*img_list)
         g.ndata['images'] = imgs
+        m = len(img_list)
+        img_ids = mx.nd.zeros((m)) + img_id
+        g.ndata['img_id'] = img_ids
         return g
 
     def __getitem__(self, idx):
@@ -257,10 +261,10 @@ class VGRelation(VisionDataset):
         img_path = self._img_path.format(img_id)
         img = mx.image.imread(img_path)
 
-        edges, bbox, node_class = self._extract_label(rel)
+        edges, bbox, node_class, node_class_vec = self._extract_label(rel)
         if bbox.shape[0] < 2:
             return None
         bbox[0] = mx.nd.array([0, 0, img.shape[1], img.shape[0]])
-        g = self._build_complete_graph(edges, bbox, node_class, img)
+        g = self._build_complete_graph(edges, bbox, node_class, node_class_vec, img, img_id)
 
         return g
