@@ -204,7 +204,7 @@ for epoch in range(nepoch):
         result.append((node_src, node_dst, link_preds, link_labels, preds, label,
                        bbox, node_class_ids, node_class_dict, edge_class_dict, image, img_id))
         print(i)
-        if i >= 0:
+        if i >= 5:
             import pickle
             with open('result.pkl', 'wb') as f:
                 pickle.dump(result, f)

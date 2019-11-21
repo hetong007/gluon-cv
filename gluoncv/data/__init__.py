@@ -25,6 +25,7 @@ from .somethingsomethingv2.classification import SomethingSomethingV2, Something
 from .hmdb51.classification import HMDB51, HMDB51Attr
 from .sampler import SplitSampler
 from .visualgenome.relation import VGRelation
+from .visualgenome.object import VGObject
 
 datasets = {
     'ade20k': ADE20KSegmentation,
