@@ -6,6 +6,7 @@ import logging
 import warnings
 import json
 import dgl
+import pickle
 import numpy as np
 import mxnet as mx
 # from mxnet import npx
@@ -34,64 +35,40 @@ class VGRelation(VisionDataset):
     """
 
     def __init__(self, root=os.path.join('~', '.mxnet', 'datasets', 'visualgenome'),
-                 top_frequent_rel=50, top_frequent_obj=150, top_frequent_pair=500, balancing='sample'):
+                 top_frequent_rel=50, top_frequent_obj=150,
+                 split='all', balancing='sample'):
         super(VGRelation, self).__init__(root)
         self._im_shapes = {}
         self._root = os.path.expanduser(root)
-        self._dict_path = os.path.join(self._root, 'relationships.json')
-        self._obj_dict_path = os.path.join(self._root, 'objects.json')
-        self._synsets_path = os.path.join(self._root, 'relationship_synsets.json')
-        self._img_path = os.path.join(self._root, 'VG_100K', '{}.jpg')
+        if split == 'all':
+            self._dict_path = os.path.join(self._root, 'relationships.json')
+            self._obj_dict_path = os.path.join(self._root, 'objects.json')
+            self._img_path = os.path.join(self._root, 'VG_100K', '{}.jpg')
+        elif split == 'train':
+            self._dict_path = os.path.join(self._root, 'relationships_train.json')
+            self._obj_dict_path = os.path.join(self._root, 'objects_train.json')
+            self._img_path = os.path.join(self._root, 'train', '{}.jpg')
+        elif split == 'val':
+            self._dict_path = os.path.join(self._root, 'relationships_val.json')
+            self._obj_dict_path = os.path.join(self._root, 'objects_val.json')
+            self._img_path = os.path.join(self._root, 'val', '{}.jpg')
+        else:
+            raise NotImplementedError
         with open(self._dict_path) as f:
             tmp = f.read()
             self._dict = json.loads(tmp)
         with open(self._obj_dict_path) as f:
             tmp = f.read()
             self._ori_dict = json.loads(tmp)
-        rel_ctr = {}
-        obj_ctr = {}
-        obj_pair_ctr = {}
-        for it in self._dict:
-            for r in it['relationships']:
-                if len(r['synsets']) > 0:
-                    k = r['synsets'][0].split('.')[0]
-                    if k in rel_ctr:
-                        rel_ctr[k] += 1
-                    else:
-                        rel_ctr[k] = 1
-                if len(r['subject']['synsets']) > 0 and len(r['object']['synsets']) > 0:
-                    k = r['subject']['synsets'][0].split('.')[0] + '_' +\
-                        r['object']['synsets'][0].split('.')[0]
-                    if k in obj_pair_ctr:
-                        obj_pair_ctr[k] += 1
-                    else:
-                        obj_pair_ctr[k] = 1
-        for it in self._ori_dict:
-            for r in it['objects']:
-                if len(r['synsets']) > 0:
-                    k = r['synsets'][0].split('.')[0]
-                    if k in obj_ctr:
-                        obj_ctr[k] += 1
-                    else:
-                        obj_ctr[k] = 1
-        rel_ctr_sorted = sorted(rel_ctr, key=rel_ctr.get, reverse=True)[0:top_frequent_rel]
-        obj_ctr_sorted = sorted(obj_ctr, key=obj_ctr.get, reverse=True)[0:top_frequent_obj]
-        obj_pair_ctr_sorted = sorted(obj_pair_ctr, key=obj_pair_ctr.get, reverse=True)[0:top_frequent_pair]
-        rel_set = set(rel_ctr_sorted)
-        obj_set = set(obj_ctr_sorted)
-        ''' 
-        # using pair
-        obj_set = []
-        for obj in obj_pair_ctr_sorted:
-            obj_set += obj.split('_')
-        obj_set = set(obj_set)
-        '''
-        self._relations = sorted(list(rel_set))
+        self._classes_pkl = os.path.join(self._root, 'classes.pkl')
+        with open(self._classes_pkl, 'rb') as f:
+            vg_obj_classes, vg_rel_classes = pickle.load(f)
+        self._obj_classes = sorted(vg_obj_classes[0:top_frequent_obj])
+        self._relations = sorted(vg_rel_classes[0:top_frequent_rel])
         self._relations_dict = {}
         for i, rel in enumerate(self._relations):
             self._relations_dict[rel] = i
 
-        self._obj_classes = sorted(list(obj_set))
         self._obj_classes_dict = {}
         for i, obj in enumerate(self._obj_classes):
             self._obj_classes_dict[obj] = i

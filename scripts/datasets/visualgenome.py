@@ -6,6 +6,7 @@ import zipfile
 import random
 import json
 import tqdm
+import pickle
 from gluoncv.utils import download, makedirs
 
 _TARGET_DIR = os.path.expanduser('~/.mxnet/datasets/visualgenome')
@@ -62,6 +63,8 @@ def split(path, train_ratio=0.7):
 
     train_path = os.path.join(path, 'train')
     val_path = os.path.join(path, 'val')
+    if os.path.isdir(train_path) and os.path.isdir(val_path):
+        return
     if not os.path.isdir(train_path):
         makedirs(train_path)
     if not os.path.isdir(val_path):
@@ -85,6 +88,9 @@ def split_json(path, src_json, train_json, val_json):
     val_path = os.path.join(path, 'val')
     train_json_path = os.path.join(path, train_json)
     val_json_path = os.path.join(path, val_json)
+
+    if os.path.exists(train_json_path) and os.path.exists(val_json_path):
+        return
 
     train_img_id = os.listdir(train_path)
     train_img_id = [int(i.split('.')[0]) for i in train_img_id]
@@ -117,10 +123,45 @@ def split_json(path, src_json, train_json, val_json):
     with open(val_json_path, 'w') as f:
         json.dump(obj_json_val, f)
 
+def extract_obj_rel_classes(path):
+    obj_path = os.path.join(path, 'objects.json')
+    rel_path = os.path.join(path, 'relationships.json')
+
+    with open(obj_path) as f:
+        tmp = f.read()
+        obj_dict = json.loads(tmp)
+    with open(rel_path) as f:
+        tmp = f.read()
+        rel_dict = json.loads(tmp)
+
+    obj_ctr = {}
+    for it in obj_dict:
+        for r in it['objects']:
+            if len(r['synsets']) > 0:
+                k = r['synsets'][0].split('.')[0]
+                if k in obj_ctr:
+                    obj_ctr[k] += 1
+                else:
+                    obj_ctr[k] = 1
+
+    rel_ctr = {}
+    for it in rel_dict:
+        for r in it['relationships']:
+            if len(r['synsets']) > 0:
+                k = r['synsets'][0].split('.')[0]
+                if k in rel_ctr:
+                    rel_ctr[k] += 1
+                else:
+                    rel_ctr[k] = 1
+    vg_obj_classes = sorted(obj_ctr, key=obj_ctr.get, reverse=True)
+    vg_rel_classes = sorted(rel_ctr, key=rel_ctr.get, reverse=True)
+    return vg_obj_classes, vg_rel_classes
+
 if __name__ == '__main__':
     random.seed(1024)
     args = parse_args()
     path = os.path.expanduser(args.download_dir)
+    '''
     if not os.path.isdir(path):
         if args.no_download:
             raise ValueError(('{} is not a valid directory, make sure it is present.'
@@ -132,8 +173,16 @@ if __name__ == '__main__':
     split_json(path, 'objects.json', 'objects_train.json', 'objects_val.json')
     split_json(path, 'relationships.json', 'relationships_train.json', 'relationships_val.json')
 
+    '''
+    vg_obj_classes, vg_rel_classes = extract_obj_rel_classes(path)
+    classes = (vg_obj_classes, vg_rel_classes)
+    with open(os.path.join(path, 'classes.pkl'), 'wb') as f:
+        pickle.dump(classes, f)
+
+    '''
     # make symlink
     makedirs(os.path.expanduser('~/.mxnet/datasets'))
     if os.path.isdir(_TARGET_DIR):
         os.remove(_TARGET_DIR)
     os.symlink(path, _TARGET_DIR)
+    '''

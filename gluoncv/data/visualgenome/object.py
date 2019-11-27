@@ -5,6 +5,7 @@ import os
 import logging
 import warnings
 import json
+import pickle
 import numpy as np
 import mxnet as mx
 from ..base import VisionDataset
@@ -31,28 +32,28 @@ class VGObject(VisionDataset):
     """
 
     def __init__(self, root=os.path.join('~', '.mxnet', 'datasets', 'visualgenome'),
-                 top_frequent_obj=150,):
+                 top_frequent_obj=150, split='all'):
         super(VGObject, self).__init__(root)
         self._im_shapes = {}
         self._root = os.path.expanduser(root)
-        self._dict_path = os.path.join(self._root, 'objects.json')
-        self._img_path = os.path.join(self._root, 'VG_100K', '{}.jpg')
+        if split == 'all':
+            self._dict_path = os.path.join(self._root, 'objects.json')
+            self._img_path = os.path.join(self._root, 'VG_100K', '{}.jpg')
+        elif split == 'train':
+            self._dict_path = os.path.join(self._root, 'objects_train.json')
+            self._img_path = os.path.join(self._root, 'train', '{}.jpg')
+        elif split == 'val':
+            self._dict_path = os.path.join(self._root, 'objects_val.json')
+            self._img_path = os.path.join(self._root, 'val', '{}.jpg')
+        else:
+            raise NotImplementedError
         with open(self._dict_path) as f:
             tmp = f.read()
             self._ori_dict = json.loads(tmp)
-        obj_ctr = {}
-        for it in self._ori_dict:
-            for r in it['objects']:
-                if len(r['synsets']) > 0:
-                    k = r['synsets'][0].split('.')[0]
-                    if k in obj_ctr:
-                        obj_ctr[k] += 1
-                    else:
-                        obj_ctr[k] = 1
-        obj_ctr_sorted = sorted(obj_ctr, key=obj_ctr.get, reverse=True)[0:top_frequent_obj]
-        obj_set = set(obj_ctr_sorted)
-
-        self._obj_classes = sorted(list(obj_set))
+        self._classes_pkl = os.path.join(self._root, 'classes.pkl')
+        with open(self._classes_pkl, 'rb') as f:
+            vg_obj_classes, vg_rel_classes = pickle.load(f)
+        self._obj_classes = sorted(vg_obj_classes[0:top_frequent_obj])
         self._obj_classes_dict = {}
         for i, obj in enumerate(self._obj_classes):
             self._obj_classes_dict[obj] = i
