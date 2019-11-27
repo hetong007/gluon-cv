@@ -299,6 +299,8 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
                 val_msg = '\n'.join(['{}={}'.format(k, v) for k, v in zip(map_name, mean_ap)])
                 logger.info('[Epoch {}] Validation: \n{}'.format(epoch, val_msg))
                 current_map = float(mean_ap[-1])
+            else:
+                current_map = 0
         else:
             current_map = 0.
         save_params(net, best_map, current_map, epoch, args.save_interval, args.save_prefix)
@@ -324,7 +326,9 @@ if __name__ == '__main__':
         net = get_model(net_name, norm_layer=gluon.contrib.nn.SyncBatchNorm,
                         norm_kwargs={'num_devices': len(ctx)}, pretrained_base=False, transfer='coco',
                         classes=train_dataset._obj_classes)
-        async_net = get_model(net_name, pretrained_base=False, transfer='coco')  # used by cpu worker
+        async_net = get_model(net_name, pretrained_base=False, transfer='coco',
+                              classes=train_dataset._obj_classes)  # used by cpu worker
+
     else:
         net = get_model(net_name, pretrained_base=False, transfer='coco', classes=train_dataset._obj_classes)
         async_net = net

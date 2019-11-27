@@ -10,6 +10,23 @@ from dgl.utils import toindex
 from dgl.nn.mxnet import GraphConv
 from gluoncv.model_zoo import get_model
 
+class SoftmaxHD(nn.HybridBlock):
+    """Softmax on multiple dimensions
+    Parameters
+    ----------
+    axis : the axis for softmax normalization
+    """
+    def __init__(self, axis=(2, 3), **kwargs):
+        super(SoftmaxHD, self).__init__(**kwargs)
+        self.axis = axis
+
+    def hybrid_forward(self, F, x):
+        x_max = F.max(x, axis=self.axis, keepdims=True)
+        x_exp = F.exp(F.broadcast_minus(x, x_max))
+        norm = F.sum(x_exp, axis=self.axis, keepdims=True)
+        res = F.broadcast_div(x_exp, norm)
+        return res
+
 class EdgeLinkMLP(nn.Block):
     def __init__(self, n_hidden, n_classes):
         super(EdgeLinkMLP, self).__init__()
@@ -18,9 +35,10 @@ class EdgeLinkMLP(nn.Block):
         self.mlp2 = nn.Dense(n_classes)
 
     def forward(self, edges):
-        feat = nd.concat(edges.src['node_class_vec'], edges.src['bbox'], edges.dst['node_class_vec'], edges.dst['bbox'])
-        out = self.mlp1(feat)
-        out = self.mlp2(self.relu(out))
+        feat = nd.concat(edges.src['node_class_prob'], edges.src['bbox'],
+                         edges.dst['node_class_prob'], edges.dst['bbox'])
+        out = self.relu(self.mlp1(feat))
+        out = self.mlp2(out)
         return {'link_preds': out}
 
 class EdgeMLP(nn.Block):
@@ -33,8 +51,8 @@ class EdgeMLP(nn.Block):
         self.mlp3 = nn.Dense(n_classes)
 
     def forward(self, edges):
-        feat = nd.concat(edges.src['node_class_vec'], edges.src['emb'], edges.src['bbox'],
-                         edges.dst['node_class_vec'], edges.dst['emb'], edges.dst['bbox'])
+        feat = nd.concat(edges.src['node_class_prob'], edges.src['emb'], edges.src['bbox'],
+                         edges.dst['node_class_prob'], edges.dst['emb'], edges.dst['bbox'])
         out = self.relu1(self.mlp1(feat))
         out = self.relu2(self.mlp2(out))
         out = self.mlp3(out)
@@ -45,6 +63,7 @@ class EdgeGCN(nn.Block):
                  in_feats,
                  n_hidden,
                  n_classes,
+                 n_obj_classes,
                  n_layers,
                  activation,
                  box_feat_ext,
@@ -60,18 +79,28 @@ class EdgeGCN(nn.Block):
         self.edge_link_mlp = EdgeLinkMLP(50, 2)
         self.edge_mlp = EdgeMLP(100, n_classes)
         self._box_feat_ext = get_model(box_feat_ext, pretrained=True, ctx=ctx).features
+        self._box_cls = nn.Dense(n_obj_classes)
+        self._softmax = SoftmaxHD(axis=(1))
 
     def forward(self, g):
+        # extract node visual feature
+        x = self._box_feat_ext(g.ndata['images'])
+        g.ndata['node_feat'] = x
+        cls = self._box_cls(x)
+        g.ndata['node_class_pred'] = cls
+        g.ndata['node_class_prob'] = self._softmax(cls)
         # link pred
         g.apply_edges(self.edge_link_mlp)
         # subgraph for gconv
         eids = np.where(g.edata['link'].asnumpy() > 0)
         sub_g = g.edge_subgraph(toindex(eids[0].tolist()))
         sub_g.copy_from_parent()
-        x = self._box_feat_ext(sub_g.ndata['images'])
+        # graph conv
+        x = sub_g.ndata['node_feat']
         for i, layer in enumerate(self.layers):
             x = layer(sub_g, x)
         sub_g.ndata['emb'] = x
+        # link classification
         sub_g.apply_edges(self.edge_mlp)
         sub_g.copy_to_parent()
         return g
@@ -83,19 +112,30 @@ logger.setLevel(logging.INFO)
 logger.addHandler(filehandler)
 logger.addHandler(streamhandler)
 
-ctx = mx.gpu()
-nepoch = 15
-net = EdgeGCN(in_feats=1024, n_hidden=100, n_classes=50, n_layers=3, activation=nd.relu,
+# Hyperparams
+# ctx = mx.gpu()
+num_gpus = 1
+ctx = [mx.gpu(i) for i in range(num_gpus)]
+nepoch = 25
+N_relations = 50
+N_objects = 150
+
+net = EdgeGCN(in_feats=1024, n_hidden=100, n_classes=N_relations, n_obj_classes=N_objects,
+              n_layers=3, activation=nd.relu,
               box_feat_ext='mobilenet1.0', ctx=ctx)
 # net.initialize(ctx=ctx)
 net._box_feat_ext.hybridize()
+net._box_cls.initialize(ctx=ctx)
+net._box_cls.hybridize()
 net.edge_mlp.initialize(ctx=ctx)
 net.edge_link_mlp.initialize(ctx=ctx)
 net.layers.initialize(ctx=ctx)
 trainer = gluon.Trainer(net.collect_params(), 'adam', 
                         {'learning_rate': 0.01, 'wd': 0.00001})
+'''
 for k, v in net._box_feat_ext.collect_params().items():
     v.grad_req = 'null'
+'''
 
 @mx.metric.register
 @mx.metric.alias('auc')
@@ -136,69 +176,108 @@ class AUCMetric(mx.metric.EvalMetric):
 # L = gluon.loss.SoftmaxCELoss()
 # L = gcv.loss.FocalLoss(num_class=2)
 L_link = gluon.loss.SoftmaxCELoss()
+L_cls = gluon.loss.SoftmaxCELoss()
 L_rel = gluon.loss.SoftmaxCELoss()
+
 train_metric = mx.metric.Accuracy()
 train_metric_top5 = mx.metric.TopKAccuracy(5)
+train_metric_node = mx.metric.Accuracy()
+train_metric_node_top5 = mx.metric.TopKAccuracy(5)
 train_metric_f1 = mx.metric.F1()
 train_metric_auc = AUCMetric()
 
 # dataset and dataloader
-vg = gcv.data.VGRelation(balancing='weight')
+vg = gcv.data.VGRelation(top_frequent_rel=N_relations, top_frequent_obj=N_objects, balancing='weight')
 
-train_data = gluon.data.DataLoader(vg, batch_size=2, shuffle=True, num_workers=8,
+train_data = gluon.data.DataLoader(vg, batch_size=4, shuffle=True, num_workers=60,
                                    batchify_fn=gcv.data.dataloader.dgl_mp_batchify_fn)
 
+def get_data_batch(g_list, ctx_list):
+    n_gpu = len(ctx_list)
+    size = len(g_list)
+    if size < n_gpu:
+        raise ValueError("Too many slices for data.")
+    step = size // n_gpu
+    slices = [g_list[i*step:(i+1)*step] if i < n_gpu - 1 else g_list[i*step:size] for i in range(n_gpu)]
+    G_list = [dgl.batch(slc) for slc in slices]
+    for G, ctx in zip(G_list, ctx_list):
+        G.ndata['images'] = G.ndata['images'].as_in_context(ctx)
+        G.ndata['bbox'] = G.ndata['bbox'].as_in_context(ctx)
+        G.ndata['node_class_ids'] = G.ndata['node_class_ids'].as_in_context(ctx)
+        G.edata['classes'] = G.edata['classes'].as_in_context(ctx)
+        G.edata['link'] = G.edata['link'].as_in_context(ctx)
+        G.edata['weights'] = G.edata['weights'].expand_dims(1).as_in_context(ctx)
+    return G_list
+
 save_dir = 'params'
-batch_verbose_freq = 10000
+batch_verbose_freq = 1000
 for epoch in range(nepoch):
     loss_val = 0
     tic = time.time()
     btic = time.time()
     train_metric.reset()
     train_metric_top5.reset()
+    train_metric_node.reset()
+    train_metric_node_top5.reset()
     train_metric_f1.reset()
     train_metric_auc.reset()
-    if epoch == 5 or epoch == 10:
+    if epoch == 15 or epoch == 20:
         trainer.set_learning_rate(trainer.learning_rate*0.1)
+    # edge_pred_weight = min((epoch*2 / nepoch), 1)
+    edge_pred_weight = 1
     for i, g_list in enumerate(train_data):
         if len(g_list) == 0:
             continue
         if isinstance(g_list, dgl.DGLGraph):
-            G = g_list
+            continue
+        elif len(g_list) < len(ctx):
+            continue
         else:
-            G = dgl.batch(g_list)
-        G.ndata['images'] = G.ndata['images'].as_in_context(ctx)
-        G.ndata['bbox'] = G.ndata['bbox'].as_in_context(ctx)
-        G.ndata['node_class_vec'] = G.ndata['node_class_vec'].as_in_context(ctx)
-        G.edata['classes'] = G.edata['classes'].as_in_context(ctx)
-        link_ind = np.where(G.edata['link'].asnumpy() == 1)[0]
-        G.edata['link'] = G.edata['link'].as_in_context(ctx)
-        G.edata['weights'] = G.edata['weights'].expand_dims(1).as_in_context(ctx)
-        with mx.autograd.record():
-            G = net(G)
-            loss = L_rel(G.edata['preds'], G.edata['classes'], G.edata['link']) + \
-                   L_link(G.edata['link_preds'], G.edata['link'], G.edata['weights'])
+            G_list = get_data_batch(g_list, ctx)
 
-        loss.backward()
+        loss = []
+        with mx.autograd.record():
+            G_list = [net(G) for G in G_list]
+            '''
+            loss = L_rel(G.edata['preds'], G.edata['classes'], G.edata['link']) + \
+                   L_link(G.edata['link_preds'], G.edata['link'], G.edata['weights']) + \
+                   L_cls(G.ndata['node_class_pred'], G.ndata['node_class_ids'])
+            '''
+            for G in G_list:
+                loss_rel = L_rel(G.edata['preds'], G.edata['classes'], G.edata['link'])
+                loss_link = L_link(G.edata['link_preds'], G.edata['link'], G.edata['weights'])
+                loss_cls = L_cls(G.ndata['node_class_pred'], G.ndata['node_class_ids'])
+                loss.append(edge_pred_weight * (loss_rel.sum() + loss_link.sum()) + loss_cls.sum())
+
+        for l in loss:
+            l.backward()
         trainer.step(1)
-        loss_val += loss.mean().asscalar()
-        train_metric.update([G.edata['classes'][link_ind]], [G.edata['preds'][link_ind]])
-        train_metric_top5.update([G.edata['classes'][link_ind]], [G.edata['preds'][link_ind]])
-        train_metric_f1.update([G.edata['link']], [G.edata['link_preds']])
-        train_metric_auc.update([G.edata['link']], [G.edata['link_preds']])
+        loss_val += sum([l.mean().asscalar() for l in loss]) / num_gpus
+        for G in G_list:
+            link_ind = np.where(G.edata['link'].asnumpy() == 1)[0]
+            train_metric.update([G.edata['classes'][link_ind]], [G.edata['preds'][link_ind]])
+            train_metric_top5.update([G.edata['classes'][link_ind]], [G.edata['preds'][link_ind]])
+            train_metric_node.update([G.ndata['node_class_ids']], [G.ndata['node_class_pred']])
+            train_metric_node_top5.update([G.ndata['node_class_ids']], [G.ndata['node_class_pred']])
+            train_metric_f1.update([G.edata['link']], [G.edata['link_preds']])
+            train_metric_auc.update([G.edata['link']], [G.edata['link_preds']])
         if (i+1) % batch_verbose_freq == 0:
             _, acc = train_metric.get()
             _, acc_top5 = train_metric_top5.get()
+            _, node_acc = train_metric_node.get()
+            _, node_acc_top5 = train_metric_node_top5.get()
             _, f1 = train_metric_f1.get()
             _, auc = train_metric_auc.get()
-            logger.info('Epoch[%d] Batch [%d] \ttime: %d\tloss=%.6f\tacc=%.6f\tacc-top5=%.6f\tf1=%.6f\tauc=%.6f'%(
-                        epoch, i, int(time.time() - btic), loss_val / (i+1), acc, acc_top5, f1, auc))
+            logger.info('Epoch[%d] Batch [%d] \ttime: %d\tloss=%.6f\tacc=%.6f,acc-top5=%.6f\tnode-acc=%.6f,node-acc-top5=%.6f\tf1=%.6f,auc=%.6f'%(
+                        epoch, i, int(time.time() - btic), loss_val / (i+1), acc, acc_top5, node_acc, node_acc_top5, f1, auc))
             btic = time.time()
     _, acc = train_metric.get()
     _, acc_top5 = train_metric_top5.get()
+    _, node_acc = train_metric_node.get()
+    _, node_acc_top5 = train_metric_node_top5.get()
     _, f1 = train_metric_f1.get()
     _, auc = train_metric_auc.get()
-    logger.info('Epoch[%d] \ttime: %d\tloss=%.6f\tacc=%.6f\tacc-top5=%.6f\tf1=%.6f\tauc=%.6f\n'%(
-                epoch, int(time.time() - tic), loss_val / (i+1), acc, acc_top5, f1, auc))
+    logger.info('Epoch[%d] \ttime: %d\tloss=%.6f\tacc=%.6f,acc-top5=%.6f\tnode-acc=%.6f,node-acc-top5=%.6f\tf1=%.6f,auc=%.6f\n'%(
+                epoch, int(time.time() - tic), loss_val / (i+1), acc, acc_top5, node_acc, node_acc_top5, f1, auc))
     net.save_parameters('%s/model-%d.params'%(save_dir, epoch))
 

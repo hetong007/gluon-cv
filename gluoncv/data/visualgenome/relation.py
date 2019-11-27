@@ -39,11 +39,15 @@ class VGRelation(VisionDataset):
         self._im_shapes = {}
         self._root = os.path.expanduser(root)
         self._dict_path = os.path.join(self._root, 'relationships.json')
+        self._obj_dict_path = os.path.join(self._root, 'objects.json')
         self._synsets_path = os.path.join(self._root, 'relationship_synsets.json')
         self._img_path = os.path.join(self._root, 'VG_100K', '{}.jpg')
         with open(self._dict_path) as f:
             tmp = f.read()
             self._dict = json.loads(tmp)
+        with open(self._obj_dict_path) as f:
+            tmp = f.read()
+            self._ori_dict = json.loads(tmp)
         rel_ctr = {}
         obj_ctr = {}
         obj_pair_ctr = {}
@@ -55,18 +59,6 @@ class VGRelation(VisionDataset):
                         rel_ctr[k] += 1
                     else:
                         rel_ctr[k] = 1
-                if len(r['subject']['synsets']) > 0:
-                    k = r['subject']['synsets'][0].split('.')[0]
-                    if k in obj_ctr:
-                        obj_ctr[k] += 1
-                    else:
-                        obj_ctr[k] = 1
-                if len(r['object']['synsets']) > 0:
-                    k = r['object']['synsets'][0].split('.')[0]
-                    if k in obj_ctr:
-                        obj_ctr[k] += 1
-                    else:
-                        obj_ctr[k] = 1
                 if len(r['subject']['synsets']) > 0 and len(r['object']['synsets']) > 0:
                     k = r['subject']['synsets'][0].split('.')[0] + '_' +\
                         r['object']['synsets'][0].split('.')[0]
@@ -74,6 +66,14 @@ class VGRelation(VisionDataset):
                         obj_pair_ctr[k] += 1
                     else:
                         obj_pair_ctr[k] = 1
+        for it in self._ori_dict:
+            for r in it['objects']:
+                if len(r['synsets']) > 0:
+                    k = r['synsets'][0].split('.')[0]
+                    if k in obj_ctr:
+                        obj_ctr[k] += 1
+                    else:
+                        obj_ctr[k] = 1
         rel_ctr_sorted = sorted(rel_ctr, key=rel_ctr.get, reverse=True)[0:top_frequent_rel]
         obj_ctr_sorted = sorted(obj_ctr, key=obj_ctr.get, reverse=True)[0:top_frequent_obj]
         obj_pair_ctr_sorted = sorted(obj_pair_ctr, key=obj_pair_ctr.get, reverse=True)[0:top_frequent_pair]
@@ -91,7 +91,7 @@ class VGRelation(VisionDataset):
         for i, rel in enumerate(self._relations):
             self._relations_dict[rel] = i
 
-        self._obj_classes = ['others'] + sorted(list(obj_set))
+        self._obj_classes = sorted(list(obj_set))
         self._obj_classes_dict = {}
         for i, obj in enumerate(self._obj_classes):
             self._obj_classes_dict[obj] = i
@@ -180,10 +180,9 @@ class VGRelation(VisionDataset):
             edges['link'].append(link)
         n_classes = len(self._obj_classes_dict)
         eta = 0.1
-        node_class_vec = node_class.one_hot(n_classes, on_value = 1 - eta + eta/n_classes, off_value = eta / n_classes)
-        return edges, bbox, node_class, node_class_vec
+        return edges, bbox, node_class.expand_dims(1)
 
-    def _build_complete_graph(self, edges, bbox, node_class, node_class_vec, img, img_id):
+    def _build_complete_graph(self, edges, bbox, node_class, img, img_id):
         N = bbox.shape[0]
         g = dgl.DGLGraph()
         g.add_nodes(N)
@@ -204,7 +203,6 @@ class VGRelation(VisionDataset):
         bbox[:,3] /= bbox[0, 3]
         g.ndata['bbox'] = bbox
         g.ndata['node_class_ids'] = node_class
-        g.ndata['node_class_vec'] = node_class_vec
 
         # assign class label to edges
         eids = g.edge_ids(edges['src'], edges['dst'])
@@ -261,10 +259,10 @@ class VGRelation(VisionDataset):
         img_path = self._img_path.format(img_id)
         img = mx.image.imread(img_path)
 
-        edges, bbox, node_class, node_class_vec = self._extract_label(rel)
+        edges, bbox, node_class = self._extract_label(rel)
         if bbox.shape[0] < 2:
             return None
         bbox[0] = mx.nd.array([0, 0, img.shape[1], img.shape[0]])
-        g = self._build_complete_graph(edges, bbox, node_class, node_class_vec, img, img_id)
+        g = self._build_complete_graph(edges, bbox, node_class, img, img_id)
 
         return g
