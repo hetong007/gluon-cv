@@ -187,7 +187,7 @@ train_metric_auc = AUCMetric()
 # dataset and dataloader
 vg = gcv.data.VGRelation(top_frequent_rel=N_relations, top_frequent_obj=N_objects, balancing='weight')
 
-train_data = gluon.data.DataLoader(vg, batch_size=4, shuffle=True, num_workers=60,
+train_data = gluon.data.DataLoader(vg, batch_size=2, shuffle=False, num_workers=60,
                                    batchify_fn=gcv.data.dataloader.dgl_mp_batchify_fn)
 
 def get_data_batch(g_list, ctx_list):

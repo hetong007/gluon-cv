@@ -105,9 +105,9 @@ def get_dataset(dataset, args):
             val_dataset, args.save_prefix + '_eval', cleanup=True,
             data_shape=(args.data_shape, args.data_shape))
     elif dataset.lower() == 'visualgenome':
-        train_dataset = gdata.VGObject()
-        val_dataset = None
-        val_metric = None
+        train_dataset = gdata.VGObject(split='train')
+        val_dataset = gdata.VGObject(split='val')
+        val_metric = VOC07MApMetric(iou_thresh=0.5, class_names=val_dataset._obj_classes)
     else:
         raise NotImplementedError('Dataset: {} not implemented.'.format(dataset))
     if args.num_samples < 0:
