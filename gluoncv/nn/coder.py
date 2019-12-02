@@ -69,10 +69,11 @@ class NumPyNormalizedBoxCenterEncoder(object):
         # g [B, N, 4], a [B, N, 4] -> codecs [B, N, 4]
         g = self.corner_to_center(ref_boxes)
         a = self.corner_to_center(anchors)
-        t0 = ((g[0] - a[0]) / a[2] - self._means[0]) / self._stds[0]
-        t1 = ((g[1] - a[1]) / a[3] - self._means[1]) / self._stds[1]
-        t2 = (np.log(g[2] / a[2]) - self._means[2]) / self._stds[2]
-        t3 = (np.log(g[3] / a[3]) - self._means[3]) / self._stds[3]
+        eps = 1e-12
+        t0 = ((g[0] - a[0]) / (a[2] + eps) - self._means[0]) / (self._stds[0] + eps)
+        t1 = ((g[1] - a[1]) / (a[3] + eps) - self._means[1]) / (self._stds[1] + eps)
+        t2 = (np.log(g[2] / (a[2] + eps)) - self._means[2]) / (self._stds[2] + eps)
+        t3 = (np.log(g[3] / (a[3] + eps)) - self._means[3]) / (self._stds[3] + eps)
         codecs = np.concatenate((t0, t1, t2, t3), axis=2)
         # samples [B, N] -> [B, N, 1] -> [B, N, 4] -> boolean
         temp = np.tile(samples.reshape((samples.shape[0], -1, 1)), reps=(1, 1, 4)) > 0.5

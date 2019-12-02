@@ -122,8 +122,8 @@ def parse_args():
         hvd.init()
 
     if args.dataset == 'voc' or args.dataset == 'visualgenome':
-        args.epochs = int(args.epochs) if args.epochs else 20
-        args.lr_decay_epoch = args.lr_decay_epoch if args.lr_decay_epoch else '14,20'
+        args.epochs = int(args.epochs) if args.epochs else 10
+        args.lr_decay_epoch = args.lr_decay_epoch if args.lr_decay_epoch else '5,8'
         args.lr = float(args.lr) if args.lr else 0.001
         args.lr_warmup = args.lr_warmup if args.lr_warmup else -1
         args.wd = float(args.wd) if args.wd else 5e-4
@@ -400,6 +400,7 @@ def train(net, train_data, val_data, eval_metric, batch_size, ctx, args):
         btic = time.time()
         base_lr = trainer.learning_rate
         rcnn_task.mix_ratio = mix_ratio
+        logger.info('Total Num of Batches: %d'%(len(train_data)))
         for i, batch in enumerate(train_data):
             if epoch == 0 and i <= lr_warmup:
                 # adjust based on real percentage
@@ -448,6 +449,7 @@ def train(net, train_data, val_data, eval_metric, batch_size, ctx, args):
             if not (epoch + 1) % args.val_interval:
                 # consider reduce the frequency of validation to save time
                 if val_data is not None:
+                    import pdb; pdb.set_trace()
                     map_name, mean_ap = validate(net, val_data, ctx, eval_metric, args)
                     val_msg = '\n'.join(['{}={}'.format(k, v) for k, v in zip(map_name, mean_ap)])
                     logger.info('[Epoch {}] Validation: \n{}'.format(epoch, val_msg))
@@ -492,7 +494,7 @@ if __name__ == '__main__':
     # net_name = '_'.join(('faster_rcnn', *module_list, args.network, args.dataset))
     net_name = '_'.join(('faster_rcnn', *module_list, args.network, 'custom'))
     args.save_prefix += net_name
-    net = get_model(net_name, pretrained_base=True,
+    net = get_model(net_name, pretrained_base=False, transfer='coco',
                     classes=train_dataset._obj_classes,
                     per_device_batch_size=args.batch_size // len(ctx), **kwargs)
     if args.resume.strip():
