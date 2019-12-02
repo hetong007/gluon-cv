@@ -238,6 +238,8 @@ def crop_resize_normalize(img, bbox_list, output_size,
         transforms.ToTensor(),
         transforms.Normalize(mean, std)
     ])
+    # test for img validity
+    test_val = img[0][0]
     for bbox in bbox_list:
         x0 = max(int(bbox[0]), 0)
         y0 = max(int(bbox[1]), 0)
@@ -245,7 +247,10 @@ def crop_resize_normalize(img, bbox_list, output_size,
         y1 = min(int(bbox[3]), int(img.shape[0]))
         w = x1 - x0
         h = y1 - y0
-        res_img = image.fixed_crop(nd.array(img), x0, y0, w, h, (output_size[1], output_size[0]))
+        if  w > 0 and h > 0:
+            res_img = image.fixed_crop(nd.array(img), x0, y0, w, h, (output_size[1], output_size[0]))
+        else:
+            res_img = mx.nd.zeros((output_size[0], output_size[1], 3))
         res_img = transform_test(res_img)
         output_list.append(res_img)
     output_array = nd.stack(*output_list)
