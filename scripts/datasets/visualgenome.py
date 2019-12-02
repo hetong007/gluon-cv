@@ -161,7 +161,6 @@ if __name__ == '__main__':
     random.seed(1024)
     args = parse_args()
     path = os.path.expanduser(args.download_dir)
-    '''
     if not os.path.isdir(path):
         if args.no_download:
             raise ValueError(('{} is not a valid directory, make sure it is present.'
@@ -173,16 +172,13 @@ if __name__ == '__main__':
     split_json(path, 'objects.json', 'objects_train.json', 'objects_val.json')
     split_json(path, 'relationships.json', 'relationships_train.json', 'relationships_val.json')
 
-    '''
     vg_obj_classes, vg_rel_classes = extract_obj_rel_classes(path)
     classes = (vg_obj_classes, vg_rel_classes)
     with open(os.path.join(path, 'classes.pkl'), 'wb') as f:
         pickle.dump(classes, f)
 
-    '''
     # make symlink
     makedirs(os.path.expanduser('~/.mxnet/datasets'))
     if os.path.isdir(_TARGET_DIR):
         os.remove(_TARGET_DIR)
     os.symlink(path, _TARGET_DIR)
-    '''

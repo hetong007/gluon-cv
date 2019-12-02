@@ -132,17 +132,15 @@ net.edge_link_mlp.initialize(ctx=ctx)
 net.layers.initialize(ctx=ctx)
 trainer = gluon.Trainer(net.collect_params(), 'adam', 
                         {'learning_rate': 0.01, 'wd': 0.00001})
-'''
 for k, v in net._box_feat_ext.collect_params().items():
     v.grad_req = 'null'
-'''
 
 @mx.metric.register
 @mx.metric.alias('auc')
 class AUCMetric(mx.metric.EvalMetric):
     def __init__(self, eps=1e-12):
         super(AUCMetric, self).__init__(
-            'auc')
+              'auc')
         self.eps = eps
 
     def update(self, labels, preds):

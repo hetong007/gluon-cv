@@ -117,10 +117,9 @@ class EdgeGCN(nn.Block):
         g.apply_edges(self.edge_mlp)
         return g
 
-def _build_complete_graph(bbox, scores, img):
+def _build_complete_graph(bbox, scores, img, thr=0.5):
     bbox_list = []
     bbox_np_list = []
-    thr = 0.5
     for i in range(bbox.shape[0]):
         if scores[i] > thr:
             bbox_list.append(bbox[i])
@@ -162,7 +161,7 @@ N_objects = 150
 net = EdgeGCN(in_feats=1024, n_hidden=100, n_classes=N_relations, n_obj_classes=N_objects,
               n_layers=3, activation=nd.relu,
               box_feat_ext='mobilenet1.0', ctx=ctx)
-net.load_parameters('params/model-6.params')
+net.load_parameters('params/model-24.params')
 vg_obj_classes = ['airplane', 'animal', 'arm', 'back', 'background', 'bag', 'ball', 'banana', 'band', 'base', 'bench', 'bicycle', 'bird', 'board', 'boat', 'book', 'bottle', 'bowl', 'box', 'branch', 'brick', 'building', 'bus', 'button', 'cabinet', 'cap', 'car', 'cat', 'ceiling', 'chair', 'child', 'clock', 'cloud', 'coat', 'container', 'contemplation', 'counter', 'cow', 'cup', 'curtain', 'design', 'dog', 'door', 'ear', 'edge', 'elephant', 'eye', 'face', 'fence', 'field', 'finger', 'flag', 'floor', 'flower', 'food', 'foot', 'frame', 'giraffe', 'girl', 'glass', 'glove', 'grass', 'hair', 'hand', 'handle', 'hat', 'head', 'headlight', 'helmet', 'hill', 'horse', 'house', 'jacket', 'jean', 'kite', 'lamp', 'land', 'leaf', 'leg', 'letter', 'light', 'line', 'logo', 'male_child', 'man', 'mirror', 'motorcycle', 'mountain', 'mouth', 'neck', 'nose', 'numeral', 'paper', 'part', 'path', 'people', 'person', 'picture', 'pillow', 'plant', 'plate', 'pole', 'post', 'railing', 'road', 'rock', 'roof', 'sand', 'screen', 'seat', 'shadow', 'sheep', 'shelf', 'shirt', 'shoe', 'short_pants', 'shrub', 'sidewalk', 'sign', 'skateboard', 'ski', 'sky', 'snow', 'sock', 'soil', 'spectacles', 'street', 'sunglasses', 'table', 'tail', 'tile', 'tire', 'topographic_point', 'train', 'tree', 'trouser', 'truck', 'trunk', 'umbrella', 'wall', 'water', 'wave', 'wheel', 'window', 'wing', 'wire', 'woman', 'word', 'writing', 'zebra']
 vg_rel_classes = ['about', 'above', 'across', 'along', 'approximately', 'arrive', 'attach', 'away', 'back', 'be', 'behind', 'belong_to', 'below', 'between', 'by', 'depart', 'depend_on', 'down', 'eat', 'fly', 'hang', 'have', 'in', 'incorporate', 'inside', 'leave', 'lie', 'look', 'make', 'next', 'outside', 'over', 'play', 'put', 'run', 'show', 'sit', 'stand', 'state', 'stay', 'swing', 'tend', 'transport', 'traverse', 'turn', 'under', 'use', 'walk', 'watch', 'wear']
 detector = get_model('yolo3_mobilenet1.0_custom', classes=vg_obj_classes)
@@ -179,6 +178,7 @@ class_IDs, scores, bounding_boxs = detector(x)
 g = _build_complete_graph(bounding_boxs[0], scores[0], img)
 
 g = net(g)
+import pdb; pdb.set_trace()
 softmax_net = SoftmaxHD(axis=(1))
 link_probs = softmax_net(g.edata['link_preds'])[:,1].asnumpy()
 thresh = 0.2
@@ -189,7 +189,6 @@ obj_probs = g.ndata['node_class_prob'].asnumpy()
 node_ids = g.find_edges(eids)
 node_src = node_ids[0].asnumpy()
 node_dst = node_ids[1].asnumpy()
-import pdb; pdb.set_trace()
 for i, eid in enumerate(eids):
     rel_prob = rel_probs[eid]
     rel_prob_ind = rel_prob.argsort()[::-1][0]

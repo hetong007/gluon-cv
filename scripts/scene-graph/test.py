@@ -94,7 +94,7 @@ net.edge_mlp.initialize(ctx=ctx)
 net.edge_link_mlp.initialize(ctx=ctx)
 net.layers.initialize(ctx=ctx)
 '''
-net.load_parameters('params/model-14.params', ctx=ctx)
+net.load_parameters('params/model-14.params', ctx=ctx, ignore_extra=True)
 trainer = gluon.Trainer(net.collect_params(), 'adam', 
                         {'learning_rate': 0.01, 'wd': 0.00001})
 for k, v in net._box_feat_ext.collect_params().items():
