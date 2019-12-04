@@ -83,6 +83,8 @@ class EdgeGCN(nn.Block):
         self._softmax = SoftmaxHD(axis=(1))
 
     def forward(self, g):
+        if g is None or g.number_of_nodes() == 0:
+            return g
         # extract node visual feature
         x = self._box_feat_ext(g.ndata['images'])
         g.ndata['node_feat'] = x
@@ -134,6 +136,7 @@ trainer = gluon.Trainer(net.collect_params(), 'adam',
                         {'learning_rate': 0.01, 'wd': 0.00001})
 for k, v in net._box_feat_ext.collect_params().items():
     v.grad_req = 'null'
+
 
 @mx.metric.register
 @mx.metric.alias('auc')
@@ -187,8 +190,13 @@ train_metric_auc = AUCMetric()
 # dataset and dataloader
 vg = gcv.data.VGRelation(top_frequent_rel=N_relations, top_frequent_obj=N_objects, balancing='weight')
 
-train_data = gluon.data.DataLoader(vg, batch_size=2, shuffle=False, num_workers=60,
+train_data = gluon.data.DataLoader(vg, batch_size=1, shuffle=False, num_workers=60,
                                    batchify_fn=gcv.data.dataloader.dgl_mp_batchify_fn)
+
+detector = get_model('yolo3_mobilenet1.0_custom', classes=vg._obj_classes, pretrained_base=False)
+params_path = '/home/ubuntu/gluon-cv/scripts/detection/visualgenome/' + \
+              'yolo3_mobilenet1.0_custom_0190_0.0000.params'
+detector.load_parameters(params_path, ctx=ctx)
 
 def get_data_batch(g_list, ctx_list):
     n_gpu = len(ctx_list)
@@ -206,6 +214,40 @@ def get_data_batch(g_list, ctx_list):
         G.edata['link'] = G.edata['link'].as_in_context(ctx)
         G.edata['weights'] = G.edata['weights'].expand_dims(1).as_in_context(ctx)
     return G_list
+
+def merge_res(g, class_ids, scores, bbox, iou_thresh=0.2):
+    img = g.ndata['images'][0]
+    gt_bbox = g.ndata['bbox']
+    img_size = img.shape[1:3]
+    bbox[:, 0] /= img_size[1]
+    bbox[:, 1] /= img_size[0]
+    bbox[:, 2] /= img_size[1]
+    bbox[:, 3] /= img_size[0]
+    inds = np.where(scores[:,0].asnumpy() > 0)[0].tolist()
+    if len(inds) == 0:
+        return None
+    ious = nd.contrib.box_iou(gt_bbox, bbox[inds])
+    # assignment
+    H, W = ious.shape
+    h = H
+    w = W
+    assign_ind = [-1 for i in range(H)]
+    while h > 0 and w > 0:
+        ind = int(ious.argmax().asscalar())
+        row_ind = ind // W
+        col_ind = ind % W
+        assign_ind[row_ind] = col_ind
+        ious[row_ind, :] = -1
+        ious[:, col_ind] = -1
+        h -= 1
+        w -= 1
+
+    remove_inds = [i for i in range(H) if assign_ind[i] == -1]
+    assign_ind = [ind for ind in assign_ind if ind > -1]
+    g.remove_nodes(remove_inds)
+    g.ndata['pred_bbox'] = bbox[assign_ind]
+    g.ndata['pred_scores'] = scores[assign_ind]
+    return g
 
 save_dir = 'params'
 batch_verbose_freq = 1000
@@ -227,25 +269,24 @@ for epoch in range(nepoch):
         if len(g_list) == 0:
             continue
         if isinstance(g_list, dgl.DGLGraph):
-            continue
+            G_list = get_data_batch([g_list], ctx)
         elif len(g_list) < len(ctx):
             continue
         else:
             G_list = get_data_batch(g_list, ctx)
 
         loss = []
+        detector_res_list = [detector(G.ndata['images'][0].expand_dims(axis=0)) for G in G_list]
         with mx.autograd.record():
+            G_list = [merge_res(G, class_ids[0], scores[0], bounding_boxs[0]) for G, (class_ids, scores, bounding_boxs) in zip(G_list, detector_res_list)]
             G_list = [net(G) for G in G_list]
-            '''
-            loss = L_rel(G.edata['preds'], G.edata['classes'], G.edata['link']) + \
-                   L_link(G.edata['link_preds'], G.edata['link'], G.edata['weights']) + \
-                   L_cls(G.ndata['node_class_pred'], G.ndata['node_class_ids'])
-            '''
+
             for G in G_list:
-                loss_rel = L_rel(G.edata['preds'], G.edata['classes'], G.edata['link'])
-                loss_link = L_link(G.edata['link_preds'], G.edata['link'], G.edata['weights'])
-                loss_cls = L_cls(G.ndata['node_class_pred'], G.ndata['node_class_ids'])
-                loss.append(edge_pred_weight * (loss_rel.sum() + loss_link.sum()) + loss_cls.sum())
+                if G is not None and G.number_of_nodes() > 0:
+                    loss_rel = L_rel(G.edata['preds'], G.edata['classes'], G.edata['link'])
+                    loss_link = L_link(G.edata['link_preds'], G.edata['link'], G.edata['weights'])
+                    loss_cls = L_cls(G.ndata['node_class_pred'], G.ndata['node_class_ids'])
+                    loss.append(edge_pred_weight * (loss_rel.sum() + loss_link.sum()) + loss_cls.sum())
 
         for l in loss:
             l.backward()
