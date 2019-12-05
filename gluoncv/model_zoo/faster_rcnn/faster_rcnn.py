@@ -468,8 +468,10 @@ class FasterRCNN(RCNN):
         bboxes = F.slice_axis(result, axis=-1, begin=2, end=6)
         feat_ind = F.slice_axis(result, axis=-1, begin=6, end=7)
         if self._additional_output:
-            box_feat = F.reshape(box_feat.expand_dims(0), (batch_size, -1, 0))
-            return ids, scores, bboxes, feat, feat_ind, box_feat, cls_pred
+            # box_feat = F.reshape(box_feat.expand_dims(0), (batch_size, -1, 0))
+            spatial_feat = top_feat.sum(axis=1).expand_dims(0).reshape(batch_size, 0, -1)
+            # return ids, scores, bboxes, feat, feat_ind, box_feat, cls_pred
+            return ids, scores, bboxes, feat, feat_ind, spatial_feat, cls_pred
         return ids, scores, bboxes
 
 

@@ -78,18 +78,12 @@ class EdgeGCN(nn.Block):
         # output layer
         self.edge_link_mlp = EdgeLinkMLP(50, 2)
         self.edge_mlp = EdgeMLP(100, n_classes)
-        self._box_feat_ext = get_model(box_feat_ext, pretrained=True, ctx=ctx).features
-        self._box_cls = nn.Dense(n_obj_classes)
         self._softmax = SoftmaxHD(axis=(1))
 
     def forward(self, g):
         if g is None or g.number_of_nodes() == 0:
             return g
-        # extract node visual feature
-        x = self._box_feat_ext(g.ndata['images'])
-        g.ndata['node_feat'] = x
-        cls = self._box_cls(x)
-        g.ndata['node_class_pred'] = cls
+        cls = g.ndata['node_class_pred']
         g.ndata['node_class_prob'] = self._softmax(cls)
         # link pred
         g.apply_edges(self.edge_link_mlp)
@@ -122,21 +116,15 @@ nepoch = 25
 N_relations = 50
 N_objects = 150
 
-net = EdgeGCN(in_feats=1024, n_hidden=100, n_classes=N_relations, n_obj_classes=N_objects,
+net = EdgeGCN(in_feats=49, n_hidden=100, n_classes=N_relations, n_obj_classes=N_objects+1,
               n_layers=3, activation=nd.relu,
               box_feat_ext='mobilenet1.0', ctx=ctx)
 # net.initialize(ctx=ctx)
-net._box_feat_ext.hybridize()
-net._box_cls.initialize(ctx=ctx)
-net._box_cls.hybridize()
 net.edge_mlp.initialize(ctx=ctx)
 net.edge_link_mlp.initialize(ctx=ctx)
 net.layers.initialize(ctx=ctx)
 trainer = gluon.Trainer(net.collect_params(), 'adam', 
                         {'learning_rate': 0.01, 'wd': 0.00001})
-for k, v in net._box_feat_ext.collect_params().items():
-    v.grad_req = 'null'
-
 
 @mx.metric.register
 @mx.metric.alias('auc')
@@ -188,9 +176,10 @@ train_metric_f1 = mx.metric.F1()
 train_metric_auc = AUCMetric()
 
 # dataset and dataloader
-vg = gcv.data.VGRelation(top_frequent_rel=N_relations, top_frequent_obj=N_objects, balancing='weight')
+vg = gcv.data.VGRelation(top_frequent_rel=N_relations, top_frequent_obj=N_objects,
+                         balancing='weight', split='train')
 
-train_data = gluon.data.DataLoader(vg, batch_size=1, shuffle=False, num_workers=60,
+train_data = gluon.data.DataLoader(vg, batch_size=num_gpus, shuffle=True, num_workers=60,
                                    batchify_fn=gcv.data.dataloader.dgl_mp_batchify_fn)
 
 # detector = get_model('yolo3_mobilenet1.0_custom', classes=vg._obj_classes, pretrained_base=False)
@@ -216,7 +205,7 @@ def get_data_batch(g_list, ctx_list):
         G.edata['weights'] = G.edata['weights'].expand_dims(1).as_in_context(ctx)
     return G_list
 
-def merge_res(g, scores, bbox, feat_ind, box_feat, cls_pred):
+def merge_res(g, scores, bbox, feat_ind, spatial_feat, cls_pred):
     img = g.ndata['images'][0]
     gt_bbox = g.ndata['bbox']
     img_size = img.shape[1:3]
@@ -249,12 +238,12 @@ def merge_res(g, scores, bbox, feat_ind, box_feat, cls_pred):
     g.ndata['pred_bbox'] = bbox[assign_ind]
     tmp_ind = [inds[i] for i in assign_ind]
     roi_ind = feat_ind[tmp_ind].squeeze(1)
-    g.ndata['pred_bbox_feat'] = box_feat[roi_ind]
-    g.ndata['pred_cls'] = cls_pred[roi_ind]
+    g.ndata['node_feat'] = spatial_feat[roi_ind]
+    g.ndata['node_class_pred'] = cls_pred[roi_ind]
     return g
 
 save_dir = 'params'
-batch_verbose_freq = 1000
+batch_verbose_freq = 100
 for epoch in range(nepoch):
     loss_val = 0
     tic = time.time()
@@ -267,8 +256,6 @@ for epoch in range(nepoch):
     train_metric_auc.reset()
     if epoch == 15 or epoch == 20:
         trainer.set_learning_rate(trainer.learning_rate*0.1)
-    # edge_pred_weight = min((epoch*2 / nepoch), 1)
-    edge_pred_weight = 1
     for i, g_list in enumerate(train_data):
         if len(g_list) == 0:
             continue
@@ -281,9 +268,10 @@ for epoch in range(nepoch):
 
         loss = []
         detector_res_list = [detector(G.ndata['images'][0].expand_dims(axis=0)) for G in G_list]
+        # import pdb; pdb.set_trace()
         with mx.autograd.record():
-            G_list = [merge_res(G, scores[0], bounding_boxs[0], feat_ind[0], box_feat[0], cls_pred[0]) \
-                          for G, (class_ids, scores, bounding_boxs, feat, feat_ind, box_feat, cls_pred) in \
+            G_list = [merge_res(G, scores[0], bounding_boxs[0], feat_ind[0], spatial_feat[0], cls_pred[0]) \
+                          for G, (class_ids, scores, bounding_boxs, feat, feat_ind, spatial_feat, cls_pred) in \
                               zip(G_list, detector_res_list)]
             G_list = [net(G) for G in G_list]
 
@@ -291,8 +279,7 @@ for epoch in range(nepoch):
                 if G is not None and G.number_of_nodes() > 0:
                     loss_rel = L_rel(G.edata['preds'], G.edata['classes'], G.edata['link'])
                     loss_link = L_link(G.edata['link_preds'], G.edata['link'], G.edata['weights'])
-                    loss_cls = L_cls(G.ndata['node_class_pred'], G.ndata['node_class_ids'])
-                    loss.append(edge_pred_weight * (loss_rel.sum() + loss_link.sum()) + loss_cls.sum())
+                    loss.append(loss_rel.sum() + loss_link.sum())
 
         for l in loss:
             l.backward()
