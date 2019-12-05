@@ -449,7 +449,6 @@ def train(net, train_data, val_data, eval_metric, batch_size, ctx, args):
             if not (epoch + 1) % args.val_interval:
                 # consider reduce the frequency of validation to save time
                 if val_data is not None:
-                    import pdb; pdb.set_trace()
                     map_name, mean_ap = validate(net, val_data, ctx, eval_metric, args)
                     val_msg = '\n'.join(['{}={}'.format(k, v) for k, v in zip(map_name, mean_ap)])
                     logger.info('[Epoch {}] Validation: \n{}'.format(epoch, val_msg))

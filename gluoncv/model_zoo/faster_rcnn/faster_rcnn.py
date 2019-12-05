@@ -601,7 +601,7 @@ def faster_rcnn_resnet50_v1b_coco(pretrained=False, pretrained_base=True, **kwar
         rpn_train_pre_nms=12000, rpn_train_post_nms=2000,
         rpn_test_pre_nms=6000, rpn_test_post_nms=1000, rpn_min_size=1,
         num_sample=128, pos_iou_thresh=0.5, pos_ratio=0.25,
-        max_num_gt=100, **kwargs)
+        max_num_gt=3000, **kwargs)
 
 
 def faster_rcnn_fpn_resnet50_v1b_coco(pretrained=False, pretrained_base=True, **kwargs):
