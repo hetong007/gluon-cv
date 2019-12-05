@@ -193,10 +193,11 @@ vg = gcv.data.VGRelation(top_frequent_rel=N_relations, top_frequent_obj=N_object
 train_data = gluon.data.DataLoader(vg, batch_size=1, shuffle=False, num_workers=60,
                                    batchify_fn=gcv.data.dataloader.dgl_mp_batchify_fn)
 
-detector = get_model('yolo3_mobilenet1.0_custom', classes=vg._obj_classes, pretrained_base=False)
-params_path = '/home/ubuntu/gluon-cv/scripts/detection/visualgenome/' + \
-              'yolo3_mobilenet1.0_custom_0190_0.0000.params'
-detector.load_parameters(params_path, ctx=ctx)
+# detector = get_model('yolo3_mobilenet1.0_custom', classes=vg._obj_classes, pretrained_base=False)
+detector = get_model('faster_rcnn_resnet50_v1b_custom', classes=vg._obj_classes,
+                     pretrained_base=False, pretrained=False, additional_output=True)
+params_path = 'faster_rcnn_resnet50_v1b_custom_0004_0.2355.params'
+detector.load_parameters(params_path, ctx=ctx, ignore_extra=True, allow_missing=True)
 
 def get_data_batch(g_list, ctx_list):
     n_gpu = len(ctx_list)
@@ -215,7 +216,7 @@ def get_data_batch(g_list, ctx_list):
         G.edata['weights'] = G.edata['weights'].expand_dims(1).as_in_context(ctx)
     return G_list
 
-def merge_res(g, class_ids, scores, bbox, iou_thresh=0.2):
+def merge_res(g, scores, bbox, feat_ind, box_feat, cls_pred):
     img = g.ndata['images'][0]
     gt_bbox = g.ndata['bbox']
     img_size = img.shape[1:3]
@@ -246,7 +247,10 @@ def merge_res(g, class_ids, scores, bbox, iou_thresh=0.2):
     assign_ind = [ind for ind in assign_ind if ind > -1]
     g.remove_nodes(remove_inds)
     g.ndata['pred_bbox'] = bbox[assign_ind]
-    g.ndata['pred_scores'] = scores[assign_ind]
+    tmp_ind = [inds[i] for i in assign_ind]
+    roi_ind = feat_ind[tmp_ind].squeeze(1)
+    g.ndata['pred_bbox_feat'] = box_feat[roi_ind]
+    g.ndata['pred_cls'] = cls_pred[roi_ind]
     return g
 
 save_dir = 'params'
@@ -278,7 +282,9 @@ for epoch in range(nepoch):
         loss = []
         detector_res_list = [detector(G.ndata['images'][0].expand_dims(axis=0)) for G in G_list]
         with mx.autograd.record():
-            G_list = [merge_res(G, class_ids[0], scores[0], bounding_boxs[0]) for G, (class_ids, scores, bounding_boxs) in zip(G_list, detector_res_list)]
+            G_list = [merge_res(G, scores[0], bounding_boxs[0], feat_ind[0], box_feat[0], cls_pred[0]) \
+                          for G, (class_ids, scores, bounding_boxs, feat, feat_ind, box_feat, cls_pred) in \
+                              zip(G_list, detector_res_list)]
             G_list = [net(G) for G in G_list]
 
             for G in G_list:

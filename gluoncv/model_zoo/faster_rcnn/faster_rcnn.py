@@ -439,11 +439,17 @@ class FasterRCNN(RCNN):
 
         # per batch predict, nms, each class has topk outputs
         results = []
+        # add feat index
+        sizes = scores[0].shape[0:2]
+        # ind = mx.nd.array(list(range(sizes[1])))
+        ind = mx.nd.linspace(0, 999, 1000)
+        ind = mx.nd.repeat(ind, repeats=sizes[0])
+        ind = ind.reshape(sizes[1], sizes[0]).transpose((1, 0)).expand_dims(axis=2)
         for rpn_box, cls_id, score, box_pred in zip(rpn_boxes, cls_ids, scores, box_preds):
             # box_pred (C, N, 4) rpn_box (1, N, 4) -> bbox (C, N, 4)
             bbox = self.box_decoder(box_pred, rpn_box)
-            # res (C, N, 6)
-            res = F.concat(*[cls_id, score, bbox], dim=-1)
+            # res (C, N, 7)
+            res = F.concat(*[cls_id, score, bbox, ind], dim=-1)
             if self.force_nms:
                 # res (1, C*N, 6), to allow cross-catogory suppression
                 res = res.reshape((1, -1, 0))
@@ -460,8 +466,10 @@ class FasterRCNN(RCNN):
         ids = F.slice_axis(result, axis=-1, begin=0, end=1)
         scores = F.slice_axis(result, axis=-1, begin=1, end=2)
         bboxes = F.slice_axis(result, axis=-1, begin=2, end=6)
+        feat_ind = F.slice_axis(result, axis=-1, begin=6, end=7)
         if self._additional_output:
-            return ids, scores, bboxes, feat
+            box_feat = F.reshape(box_feat.expand_dims(0), (batch_size, -1, 0))
+            return ids, scores, bboxes, feat, feat_ind, box_feat, cls_pred
         return ids, scores, bboxes
 
 
@@ -771,7 +779,7 @@ def faster_rcnn_resnet50_v1b_custom(classes, transfer=None, pretrained_base=True
             features=features, top_features=top_features, classes=classes,
             short=600, max_size=1000, train_patterns=train_patterns,
             nms_thresh=0.3, nms_topk=400, post_nms=100,
-            roi_mode='align', roi_size=(14, 14), strides=16, clip=None,
+            roi_mode='align', roi_size=(14, 14), strides=16, clip=4.14,
             rpn_channel=1024, base_size=16, scales=(2, 4, 8, 16, 32),
             ratios=(0.5, 1, 2), alloc_size=(128, 128), rpn_nms_thresh=0.7,
             rpn_train_pre_nms=12000, rpn_train_post_nms=2000,
