@@ -112,7 +112,7 @@ logger.addHandler(streamhandler)
 # ctx = mx.gpu()
 num_gpus = 1
 ctx = [mx.gpu(i) for i in range(num_gpus)]
-nepoch = 25
+nepoch = 10
 N_relations = 50
 N_objects = 150
 
@@ -176,16 +176,19 @@ train_metric_f1 = mx.metric.F1()
 train_metric_auc = AUCMetric()
 
 # dataset and dataloader
-vg = gcv.data.VGRelation(top_frequent_rel=N_relations, top_frequent_obj=N_objects,
-                         balancing='weight', split='train')
+vg_train = gcv.data.VGRelation(top_frequent_rel=N_relations, top_frequent_obj=N_objects,
+                               balancing='weight', split='train')
+vg_val = gcv.data.VGRelation(top_frequent_rel=N_relations, top_frequent_obj=N_objects,
+                             balancing='weight', split='val')
 
-train_data = gluon.data.DataLoader(vg, batch_size=num_gpus, shuffle=True, num_workers=60,
+train_data = gluon.data.DataLoader(vg_train, batch_size=num_gpus, shuffle=False, num_workers=60,
+                                   batchify_fn=gcv.data.dataloader.dgl_mp_batchify_fn)
+val_data = gluon.data.DataLoader(vg_val, batch_size=num_gpus, shuffle=False, num_workers=60,
                                    batchify_fn=gcv.data.dataloader.dgl_mp_batchify_fn)
 
-# detector = get_model('yolo3_mobilenet1.0_custom', classes=vg._obj_classes, pretrained_base=False)
-detector = get_model('faster_rcnn_resnet50_v1b_custom', classes=vg._obj_classes,
+detector = get_model('faster_rcnn_resnet50_v1b_custom', classes=vg_train._obj_classes,
                      pretrained_base=False, pretrained=False, additional_output=True)
-params_path = 'faster_rcnn_resnet50_v1b_custom_0004_0.2355.params'
+params_path = 'faster_rcnn_resnet50_v1b_custom_0007_0.2398.params'
 detector.load_parameters(params_path, ctx=ctx, ignore_extra=True, allow_missing=True)
 
 def get_data_batch(g_list, ctx_list):
@@ -208,6 +211,7 @@ def get_data_batch(g_list, ctx_list):
 def merge_res(g, scores, bbox, feat_ind, spatial_feat, cls_pred):
     img = g.ndata['images'][0]
     gt_bbox = g.ndata['bbox']
+    gt_bbox[0,:] = [0, 0, 0, 0]
     img_size = img.shape[1:3]
     bbox[:, 0] /= img_size[1]
     bbox[:, 1] /= img_size[0]
@@ -243,7 +247,7 @@ def merge_res(g, scores, bbox, feat_ind, spatial_feat, cls_pred):
     return g
 
 save_dir = 'params'
-batch_verbose_freq = 100
+batch_verbose_freq = 1000
 for epoch in range(nepoch):
     loss_val = 0
     tic = time.time()
@@ -254,7 +258,7 @@ for epoch in range(nepoch):
     train_metric_node_top5.reset()
     train_metric_f1.reset()
     train_metric_auc.reset()
-    if epoch == 15 or epoch == 20:
+    if epoch == 5 or epoch == 8:
         trainer.set_learning_rate(trainer.learning_rate*0.1)
     for i, g_list in enumerate(train_data):
         if len(g_list) == 0:
@@ -268,7 +272,6 @@ for epoch in range(nepoch):
 
         loss = []
         detector_res_list = [detector(G.ndata['images'][0].expand_dims(axis=0)) for G in G_list]
-        # import pdb; pdb.set_trace()
         with mx.autograd.record():
             G_list = [merge_res(G, scores[0], bounding_boxs[0], feat_ind[0], spatial_feat[0], cls_pred[0]) \
                           for G, (class_ids, scores, bounding_boxs, feat, feat_ind, spatial_feat, cls_pred) in \
