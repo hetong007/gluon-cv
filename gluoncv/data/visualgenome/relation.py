@@ -14,6 +14,7 @@ import mxnet as mx
 from ..base import VisionDataset
 from collections import Counter
 from ...data.transforms.pose import crop_resize_normalize
+from ...data.transforms.presets.rcnn import FasterRCNNDefaultTrainTransform
 
 class VGRelation(VisionDataset):
     """Pascal VOC detection Dataset.
@@ -74,6 +75,7 @@ class VGRelation(VisionDataset):
             self._obj_classes_dict[obj] = i
 
         self._balancing = balancing
+        self.img_transform = FasterRCNNDefaultTrainTransform(short=600, max_size=1000)
 
     def __len__(self):
         return len(self._dict)
@@ -81,7 +83,8 @@ class VGRelation(VisionDataset):
     def _extract_label(self, rel):
         n = len(rel)
         # extract global ids first, and map into local ids
-        object_ids = [0]
+        # object_ids = [0]
+        object_ids = []
         for rl in rel:
             sub = rl['subject']
             ob = rl['object']
@@ -95,6 +98,8 @@ class VGRelation(VisionDataset):
         for i, obj in enumerate(object_ids):
             ids_dict[str(obj)] = i
         m = len(object_ids)
+        if m == 0:
+            return None, None, None
         bbox = mx.nd.zeros((m, 4))
         node_class = mx.nd.zeros((m))
         visit_ind = set()
@@ -155,8 +160,6 @@ class VGRelation(VisionDataset):
             edges['dst'].append(ob_ind)
             edges['rel'].append(rel_idx)
             edges['link'].append(link)
-        n_classes = len(self._obj_classes_dict)
-        eta = 0.1
         return edges, bbox, node_class.expand_dims(1)
 
     def _build_complete_graph(self, edges, bbox, node_class, img, img_id):
@@ -174,12 +177,18 @@ class VGRelation(VisionDataset):
         g.add_edges(dst, src)
 
         # node features
-        bbox[:,0] /= bbox[0, 2]
-        bbox[:,1] /= bbox[0, 3]
-        bbox[:,2] /= bbox[0, 2]
-        bbox[:,3] /= bbox[0, 3]
+        bbox[:,0] /= img.shape[2]
+        bbox[:,1] /= img.shape[1]
+        bbox[:,2] /= img.shape[2]
+        bbox[:,3] /= img.shape[1]
         g.ndata['bbox'] = bbox
+
         g.ndata['node_class_ids'] = node_class
+        eta = 0.1
+        n_classes = len(self._obj_classes_dict)
+        g.ndata['node_class_vec'] = node_class[:,0].one_hot(n_classes,
+                                                            on_value = 1 - eta + eta/n_classes,
+                                                            off_value = eta / n_classes)
 
         # assign class label to edges
         eids = g.edge_ids(edges['src'], edges['dst'])
@@ -215,16 +224,6 @@ class VGRelation(VisionDataset):
             raise NotImplementedError
         g.edata['weights'] = mx.nd.array(weights)
 
-        # cut img to each node
-        bbox_list = []
-        for i in range(bbox.shape[0]):
-            bbox_list.append(bbox[i].asnumpy())
-        img_list = crop_resize_normalize(img, bbox_list, (224, 224))
-        imgs = mx.nd.stack(*img_list)
-        g.ndata['images'] = imgs
-        m = len(img_list)
-        img_ids = mx.nd.zeros((m)) + img_id
-        g.ndata['img_id'] = img_ids
         return g
 
     def __getitem__(self, idx):
@@ -237,9 +236,11 @@ class VGRelation(VisionDataset):
         img = mx.image.imread(img_path)
 
         edges, bbox, node_class = self._extract_label(rel)
+        if edges is None:
+            return None, None
+        img, bbox = self.img_transform(img, bbox)
         if bbox.shape[0] < 2:
-            return None
-        bbox[0] = mx.nd.array([0, 0, img.shape[1], img.shape[0]])
+            return None, None
         g = self._build_complete_graph(edges, bbox, node_class, img, img_id)
 
-        return g
+        return g, img

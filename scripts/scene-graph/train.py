@@ -9,6 +9,7 @@ from mxnet.gluon import nn
 from dgl.utils import toindex
 from dgl.nn.mxnet import GraphConv
 from gluoncv.model_zoo import get_model
+from gluoncv.data.batchify import Pad
 
 class SoftmaxHD(nn.HybridBlock):
     """Softmax on multiple dimensions
@@ -35,8 +36,12 @@ class EdgeLinkMLP(nn.Block):
         self.mlp2 = nn.Dense(n_classes)
 
     def forward(self, edges):
-        feat = nd.concat(edges.src['node_class_prob'], edges.src['bbox'],
-                         edges.dst['node_class_prob'], edges.dst['bbox'])
+        '''
+        feat = nd.concat(edges.src['node_class_vec'], edges.src['bbox'],
+                         edges.dst['node_class_vec'], edges.dst['bbox'])
+        '''
+        feat = nd.concat(edges.src['node_class_prob'], edges.src['pred_bbox'],
+                         edges.dst['node_class_prob'], edges.dst['pred_bbox'])
         out = self.relu(self.mlp1(feat))
         out = self.mlp2(out)
         return {'link_preds': out}
@@ -51,8 +56,12 @@ class EdgeMLP(nn.Block):
         self.mlp3 = nn.Dense(n_classes)
 
     def forward(self, edges):
-        feat = nd.concat(edges.src['node_class_prob'], edges.src['emb'], edges.src['bbox'],
-                         edges.dst['node_class_prob'], edges.dst['emb'], edges.dst['bbox'])
+        '''
+        feat = nd.concat(edges.src['node_class_vec'], edges.src['emb'], edges.src['bbox'],
+                         edges.dst['node_class_vec'], edges.ds['emb'], edges.dst['bbox'])
+        '''
+        feat = nd.concat(edges.src['node_class_prob'], edges.src['emb'], edges.src['pred_bbox'],
+                         edges.dst['node_class_prob'], edges.dst['emb'], edges.dst['pred_bbox'])
         out = self.relu1(self.mlp1(feat))
         out = self.relu2(self.mlp2(out))
         out = self.mlp3(out)
@@ -63,10 +72,10 @@ class EdgeGCN(nn.Block):
                  in_feats,
                  n_hidden,
                  n_classes,
-                 n_obj_classes,
                  n_layers,
                  activation,
                  box_feat_ext,
+                 pretrained_base,
                  ctx):
         super(EdgeGCN, self).__init__()
         self.layers = nn.Sequential()
@@ -78,6 +87,7 @@ class EdgeGCN(nn.Block):
         # output layer
         self.edge_link_mlp = EdgeLinkMLP(50, 2)
         self.edge_mlp = EdgeMLP(100, n_classes)
+        # self._box_feat_ext = get_model(box_feat_ext, pretrained=pretrained_base, ctx=ctx).features[:-2]
         self._softmax = SoftmaxHD(axis=(1))
 
     def forward(self, g):
@@ -87,6 +97,15 @@ class EdgeGCN(nn.Block):
         g.ndata['node_class_prob'] = self._softmax(cls)
         # link pred
         g.apply_edges(self.edge_link_mlp)
+        '''
+        # graph conv
+        x = g.ndata['node_feat']
+        for i, layer in enumerate(self.layers):
+            x = layer(g, x)
+        g.ndata['emb'] = x
+        # link classification
+        g.apply_edges(self.edge_mlp)
+        '''
         # subgraph for gconv
         eids = np.where(g.edata['link'].asnumpy() > 0)
         sub_g = g.edge_subgraph(toindex(eids[0].tolist()))
@@ -111,14 +130,17 @@ logger.addHandler(streamhandler)
 # Hyperparams
 # ctx = mx.gpu()
 num_gpus = 1
+batch_size = num_gpus * 8
 ctx = [mx.gpu(i) for i in range(num_gpus)]
 nepoch = 10
 N_relations = 50
 N_objects = 150
+save_dir = 'params'
+batch_verbose_freq = 100
 
-net = EdgeGCN(in_feats=49, n_hidden=100, n_classes=N_relations, n_obj_classes=N_objects+1,
-              n_layers=3, activation=nd.relu,
-              box_feat_ext='mobilenet1.0', ctx=ctx)
+net = EdgeGCN(in_feats=49, n_hidden=32, n_classes=N_relations,
+              n_layers=2, activation=nd.relu,
+              box_feat_ext='mobilenet1.0', pretrained_base=False, ctx=ctx)
 # net.initialize(ctx=ctx)
 net.edge_mlp.initialize(ctx=ctx)
 net.edge_link_mlp.initialize(ctx=ctx)
@@ -144,7 +166,8 @@ class AUCMetric(mx.metric.EvalMetric):
         tmp = sorted(tmp, key=itemgetter(1), reverse=True)
         label_sum = label_weight.sum()
         if label_sum == 0 or label_sum == label_weight.size:
-            raise Exception("AUC with one class is undefined")
+            return
+            # raise Exception("AUC with one class is undefined")
 
         label_one_num = np.count_nonzero(label_weight)
         label_zero_num = len(label_weight) - label_one_num
@@ -162,10 +185,7 @@ class AUCMetric(mx.metric.EvalMetric):
         self.sum_metric += area / total_area
         self.num_inst += 1
 
-# L = gluon.loss.SoftmaxCELoss()
-# L = gcv.loss.FocalLoss(num_class=2)
 L_link = gluon.loss.SoftmaxCELoss()
-L_cls = gluon.loss.SoftmaxCELoss()
 L_rel = gluon.loss.SoftmaxCELoss()
 
 train_metric = mx.metric.Accuracy()
@@ -178,37 +198,54 @@ train_metric_auc = AUCMetric()
 # dataset and dataloader
 vg_train = gcv.data.VGRelation(top_frequent_rel=N_relations, top_frequent_obj=N_objects,
                                balancing='weight', split='train')
+'''
 vg_val = gcv.data.VGRelation(top_frequent_rel=N_relations, top_frequent_obj=N_objects,
                              balancing='weight', split='val')
-
-train_data = gluon.data.DataLoader(vg_train, batch_size=num_gpus, shuffle=False, num_workers=60,
+'''
+logger.info('data loaded!')
+train_data = gluon.data.DataLoader(vg_train, batch_size=batch_size, shuffle=True, num_workers=8*num_gpus,
                                    batchify_fn=gcv.data.dataloader.dgl_mp_batchify_fn)
-val_data = gluon.data.DataLoader(vg_val, batch_size=num_gpus, shuffle=False, num_workers=60,
+'''
+val_data = gluon.data.DataLoader(vg_val, batch_size=1, shuffle=False, num_workers=60,
                                    batchify_fn=gcv.data.dataloader.dgl_mp_batchify_fn)
+'''
 
 detector = get_model('faster_rcnn_resnet50_v1b_custom', classes=vg_train._obj_classes,
                      pretrained_base=False, pretrained=False, additional_output=True)
 params_path = 'faster_rcnn_resnet50_v1b_custom_0007_0.2398.params'
 detector.load_parameters(params_path, ctx=ctx, ignore_extra=True, allow_missing=True)
+# detector.initialize()
+for k, v in detector.collect_params().items():
+    v.grad_req = 'null'
+'''
+for k, v in detector.class_predictor.collect_params().items():
+    v.grad_req = 'write'
+detector.save_parameters('%s/detector-%d.params'%(save_dir, 0))
+'''
 
-def get_data_batch(g_list, ctx_list):
+def get_data_batch(g_list, img_list, ctx_list):
+    if g_list is None or len(g_list) == 0:
+        return None, None
     n_gpu = len(ctx_list)
     size = len(g_list)
     if size < n_gpu:
-        raise ValueError("Too many slices for data.")
+        raise Exception("too small batch")
     step = size // n_gpu
-    slices = [g_list[i*step:(i+1)*step] if i < n_gpu - 1 else g_list[i*step:size] for i in range(n_gpu)]
-    G_list = [dgl.batch(slc) for slc in slices]
-    for G, ctx in zip(G_list, ctx_list):
-        G.ndata['images'] = G.ndata['images'].as_in_context(ctx)
-        G.ndata['bbox'] = G.ndata['bbox'].as_in_context(ctx)
-        G.ndata['node_class_ids'] = G.ndata['node_class_ids'].as_in_context(ctx)
-        G.edata['classes'] = G.edata['classes'].as_in_context(ctx)
-        G.edata['link'] = G.edata['link'].as_in_context(ctx)
-        G.edata['weights'] = G.edata['weights'].expand_dims(1).as_in_context(ctx)
-    return G_list
+    G_list = [g_list[i*step:(i+1)*step] if i < n_gpu - 1 else g_list[i*step:size] for i in range(n_gpu)]
+    img_list = [img_list[i*step:(i+1)*step] if i < n_gpu - 1 else img_list[i*step:size] for i in range(n_gpu)]
 
-def merge_res(g, scores, bbox, feat_ind, spatial_feat, cls_pred):
+    for G_slice, ctx in zip(G_list, ctx_list):
+        for G in G_slice:
+            G.ndata['bbox'] = G.ndata['bbox'].as_in_context(ctx)
+            G.ndata['node_class_ids'] = G.ndata['node_class_ids'].as_in_context(ctx)
+            G.ndata['node_class_vec'] = G.ndata['node_class_vec'].as_in_context(ctx)
+            G.edata['classes'] = G.edata['classes'].as_in_context(ctx)
+            G.edata['link'] = G.edata['link'].as_in_context(ctx)
+            G.edata['weights'] = G.edata['weights'].expand_dims(1).as_in_context(ctx)
+    img_list = [img.as_in_context(ctx) for img in img_list]
+    return G_list, img_list
+
+def merge_res_iou(g, scores, bbox, feat_ind, spatial_feat, cls_pred, iou_thresh=0.5):
     img = g.ndata['images'][0]
     gt_bbox = g.ndata['bbox']
     gt_bbox[0,:] = [0, 0, 0, 0]
@@ -226,11 +263,15 @@ def merge_res(g, scores, bbox, feat_ind, spatial_feat, cls_pred):
     h = H
     w = W
     assign_ind = [-1 for i in range(H)]
+    assign_scores = [-1 for i in range(H)]
     while h > 0 and w > 0:
         ind = int(ious.argmax().asscalar())
         row_ind = ind // W
         col_ind = ind % W
+        if ious[row_ind, col_ind].asscalar() < iou_thresh:
+            break
         assign_ind[row_ind] = col_ind
+        assign_scores[row_ind] = ious[row_ind, col_ind].asscalar()
         ious[row_ind, :] = -1
         ious[:, col_ind] = -1
         h -= 1
@@ -238,16 +279,24 @@ def merge_res(g, scores, bbox, feat_ind, spatial_feat, cls_pred):
 
     remove_inds = [i for i in range(H) if assign_ind[i] == -1]
     assign_ind = [ind for ind in assign_ind if ind > -1]
+    if len(remove_inds) >= g.number_of_nodes() - 1:
+        return None
     g.remove_nodes(remove_inds)
-    g.ndata['pred_bbox'] = bbox[assign_ind]
-    tmp_ind = [inds[i] for i in assign_ind]
-    roi_ind = feat_ind[tmp_ind].squeeze(1)
+    box_ind = [inds[i] for i in assign_ind]
+    roi_ind = feat_ind[box_ind].squeeze(1)
+    g.ndata['pred_bbox'] = bbox[box_ind]
     g.ndata['node_feat'] = spatial_feat[roi_ind]
     g.ndata['node_class_pred'] = cls_pred[roi_ind]
     return g
 
-save_dir = 'params'
-batch_verbose_freq = 1000
+def merge_res(g_slice, bbox, spatial_feat, cls_pred):
+    for i, g in enumerate(g_slice):
+        n_node = g.number_of_nodes()
+        g.ndata['pred_bbox'] = bbox[i, 0:n_node]
+        g.ndata['node_class_pred'] = cls_pred[i, 0:n_node]
+        g.ndata['node_feat'] = spatial_feat[i, 0:n_node]
+    return dgl.batch(g_slice)
+
 for epoch in range(nepoch):
     loss_val = 0
     tic = time.time()
@@ -258,27 +307,29 @@ for epoch in range(nepoch):
     train_metric_node_top5.reset()
     train_metric_f1.reset()
     train_metric_auc.reset()
-    if epoch == 5 or epoch == 8:
+    if epoch == 8:
         trainer.set_learning_rate(trainer.learning_rate*0.1)
-    for i, g_list in enumerate(train_data):
-        if len(g_list) == 0:
+    n_batches = len(train_data)
+    for i, (G_list, img_list) in enumerate(train_data):
+        G_list, img_list = get_data_batch(G_list, img_list, ctx)
+        if G_list is None or img_list is None:
             continue
-        if isinstance(g_list, dgl.DGLGraph):
-            G_list = get_data_batch([g_list], ctx)
-        elif len(g_list) < len(ctx):
-            continue
-        else:
-            G_list = get_data_batch(g_list, ctx)
 
         loss = []
-        detector_res_list = [detector(G.ndata['images'][0].expand_dims(axis=0)) for G in G_list]
-        with mx.autograd.record():
-            G_list = [merge_res(G, scores[0], bounding_boxs[0], feat_ind[0], spatial_feat[0], cls_pred[0]) \
-                          for G, (class_ids, scores, bounding_boxs, feat, feat_ind, spatial_feat, cls_pred) in \
-                              zip(G_list, detector_res_list)]
-            G_list = [net(G) for G in G_list]
+        detector_res_list = []
+        G_batch = []
+        bbox_pad = Pad(axis=(0))
+        for G_slice, img in zip(G_list, img_list):
+            cur_ctx = img.context
+            bbox_list = [G.ndata['bbox'] for G in G_slice]
+            bbox_stack = bbox_pad(bbox_list).as_in_context(cur_ctx)
+            bbox, spatial_feat, cls_pred = detector((img, bbox_stack))
+            G_batch.append(merge_res(G_slice, bbox, spatial_feat, cls_pred))
 
-            for G in G_list:
+        with mx.autograd.record():
+            G_batch = [net(G) for G in G_batch]
+
+            for G in G_batch:
                 if G is not None and G.number_of_nodes() > 0:
                     loss_rel = L_rel(G.edata['preds'], G.edata['classes'], G.edata['link'])
                     loss_link = L_link(G.edata['link_preds'], G.edata['link'], G.edata['weights'])
@@ -286,10 +337,14 @@ for epoch in range(nepoch):
 
         for l in loss:
             l.backward()
-        trainer.step(1)
+        trainer.step(batch_size)
         loss_val += sum([l.mean().asscalar() for l in loss]) / num_gpus
-        for G in G_list:
+        for G in G_batch:
+            if G is None or G.number_of_nodes() == 0:
+                continue
             link_ind = np.where(G.edata['link'].asnumpy() == 1)[0]
+            if len(link_ind) == 0:
+                continue
             train_metric.update([G.edata['classes'][link_ind]], [G.edata['preds'][link_ind]])
             train_metric_top5.update([G.edata['classes'][link_ind]], [G.edata['preds'][link_ind]])
             train_metric_node.update([G.ndata['node_class_ids']], [G.ndata['node_class_pred']])
@@ -303,8 +358,12 @@ for epoch in range(nepoch):
             _, node_acc_top5 = train_metric_node_top5.get()
             _, f1 = train_metric_f1.get()
             _, auc = train_metric_auc.get()
-            logger.info('Epoch[%d] Batch [%d] \ttime: %d\tloss=%.6f\tacc=%.6f,acc-top5=%.6f\tnode-acc=%.6f,node-acc-top5=%.6f\tf1=%.6f,auc=%.6f'%(
-                        epoch, i, int(time.time() - btic), loss_val / (i+1), acc, acc_top5, node_acc, node_acc_top5, f1, auc))
+            logger.info('Epoch[%d] Batch [%d/%d] \ttime: %d\tloss=%.4f\tacc=%.4f,acc-top5=%.4f\tnode-acc=%.4f,node-acc-top5=%.4f\tf1=%.4f,auc=%.4f'%(
+                        epoch, i, n_batches, int(time.time() - btic), loss_val / (i+1), acc, acc_top5, node_acc, node_acc_top5, f1, auc))
+            '''
+            logger.info('Epoch[%d] Batch [%d] \ttime: %d\tloss=%.4f\tacc=%.4f,acc-top5=%.4f\tf1=%.4f,auc=%.4f'%(
+                        epoch, i, int(time.time() - btic), loss_val / (i+1), acc, acc_top5, f1, auc))
+            '''
             btic = time.time()
     _, acc = train_metric.get()
     _, acc_top5 = train_metric_top5.get()
@@ -312,7 +371,12 @@ for epoch in range(nepoch):
     _, node_acc_top5 = train_metric_node_top5.get()
     _, f1 = train_metric_f1.get()
     _, auc = train_metric_auc.get()
-    logger.info('Epoch[%d] \ttime: %d\tloss=%.6f\tacc=%.6f,acc-top5=%.6f\tnode-acc=%.6f,node-acc-top5=%.6f\tf1=%.6f,auc=%.6f\n'%(
+    logger.info('Epoch[%d] \ttime: %d\tloss=%.4f\tacc=%.4f,acc-top5=%.4f\tnode-acc=%.4f,node-acc-top5=%.4f\tf1=%.4f,auc=%.4f\n'%(
                 epoch, int(time.time() - tic), loss_val / (i+1), acc, acc_top5, node_acc, node_acc_top5, f1, auc))
+    '''
+    logger.info('Epoch[%d] \ttime: %d\tloss=%.4f\tacc=%.4f,acc-top5=%.4f\tf1=%.4f,auc=%.4f\n'%(
+                epoch, int(time.time() - tic), loss_val / (i+1), acc, acc_top5, f1, auc))
+    '''
+    # detector.save_parameters('%s/detector-%d.params'%(save_dir, epoch))
     net.save_parameters('%s/model-%d.params'%(save_dir, epoch))
 

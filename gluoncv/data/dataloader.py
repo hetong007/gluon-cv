@@ -9,6 +9,7 @@ from mxnet import context
 from mxnet.gluon.data.dataloader import DataLoader, _MultiWorkerIter
 from mxnet.gluon.data.dataloader import default_mp_batchify_fn, default_batchify_fn
 from ..utils.filesystem import try_import
+from .batchify import Pad
 
 def default_pad_batchify_fn(data):
     """Collate data into batch, labels are padded to same shape"""
@@ -64,16 +65,19 @@ def dgl_mp_batchify_fn(data):
     Change `nd.stack` to `dgl.batch` since batch dimension already exists.
     """
     dgl = try_import('dgl')
-    if isinstance(data[0], dgl.DGLGraph) or data[0] is None:
-        return [d for d in data if isinstance(d, dgl.DGLGraph)]
-    elif isinstance(data, tuple):
+    if isinstance(data[0], tuple):
         data = zip(*data)
         return [dgl_mp_batchify_fn(i) for i in data]
-    else:
-        import pdb;pdb.set_trace()
-        data = np.asarray(data)
-        return nd.array(data, dtype=data.dtype,
-                        ctx=context.Context('cpu_shared', 0))
+    
+    data_type = None
+    for dt in data:
+        if dt is not None:
+            if isinstance(dt, dgl.DGLGraph):
+                return [d for d in data if isinstance(d, dgl.DGLGraph)]
+            elif isinstance(dt, nd.NDArray):
+                pad = Pad(axis=(1, 2), num_shards=1, ret_length=False)
+                data_list = [dt for dt in data if dt is not None]
+                return pad(data_list)
 
 class DetectionDataLoader(DataLoader):
     """Data loader for detection dataset.

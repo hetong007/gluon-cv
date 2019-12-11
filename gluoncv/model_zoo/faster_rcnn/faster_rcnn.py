@@ -352,21 +352,35 @@ class FasterRCNN(RCNN):
             else:
                 return [x]
 
+        if isinstance(x, tuple):
+            x, m_rpn_box = x
+            manual_rpn_box = True
         feat = self.features(x)
         if not isinstance(feat, (list, tuple)):
             feat = [feat]
 
         # RPN proposals
         if autograd.is_training():
-            rpn_score, rpn_box, raw_rpn_score, raw_rpn_box, anchors = \
-                self.rpn(F.zeros_like(x), *feat)
-            rpn_box, samples, matches = self.sampler(rpn_box, rpn_score, gt_box)
+            if manual_rpn_box:
+                rpn_box = m_rpn_box
+                self.nms_thresh = 1
+            else:
+                rpn_score, rpn_box, raw_rpn_score, raw_rpn_box, anchors = \
+                    self.rpn(F.zeros_like(x), *feat)
+                rpn_box, samples, matches = self.sampler(rpn_box, rpn_score, gt_box)
         else:
-            _, rpn_box = self.rpn(F.zeros_like(x), *feat)
+            if manual_rpn_box:
+                rpn_box = m_rpn_box
+                self.nms_thresh = 1
+            else:
+                _, rpn_box = self.rpn(F.zeros_like(x), *feat)
 
         # create batchid for roi
-        num_roi = self._num_sample if autograd.is_training() else self._rpn_test_post_nms
-        batch_size = self._batch_size if autograd.is_training() else 1
+        if not manual_rpn_box:
+            num_roi = self._num_sample if autograd.is_training() else self._rpn_test_post_nms
+        else:
+            num_roi = m_rpn_box.shape[1]
+        batch_size = self._batch_size if autograd.is_training() else rpn_box.shape[0]
         with autograd.pause():
             roi_batchid = F.arange(0, batch_size)
             roi_batchid = F.repeat(roi_batchid, num_roi)
@@ -400,6 +414,10 @@ class FasterRCNN(RCNN):
         cls_pred = self.class_predictor(box_feat)
         # cls_pred (B * N, C) -> (B, N, C)
         cls_pred = cls_pred.reshape((batch_size, num_roi, self.num_class + 1))
+        if manual_rpn_box:
+            # spatial_feat = top_feat.sum(axis=1).expand_dims(0).reshape(batch_size, 0, -1)
+            spatial_feat = top_feat.sum(axis=1).reshape((-4, rpn_box.shape[0], rpn_box.shape[1], -3))
+            return rpn_box, spatial_feat, cls_pred
 
         # no need to convert bounding boxes in training, just return
         if autograd.is_training():

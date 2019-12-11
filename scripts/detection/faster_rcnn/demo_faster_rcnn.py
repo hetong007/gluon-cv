@@ -41,13 +41,14 @@ if __name__ == '__main__':
         net = gcv.model_zoo.get_model(args.network, pretrained=False, pretrained_base=False)
         net.load_parameters(args.pretrained)
     net.set_nms(0.3, 200)
-    net.collect_params().reset_ctx(ctx = ctx)
+    # net.collect_params().reset_ctx(ctx = ctx)
 
     for image in image_list:
         ax = None
         x, img = presets.rcnn.load_test(image, short=net.short, max_size=net.max_size)
         x = x.as_in_context(ctx[0])
         ids, scores, bboxes = [xx[0].asnumpy() for xx in net(x)]
+        import pdb; pdb.set_trace()
         ax = gcv.utils.viz.plot_bbox(img, bboxes, scores, ids, thresh=args.thresh,
                                      class_names=net.classes, ax=ax)
         plt.show()
