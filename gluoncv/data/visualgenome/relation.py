@@ -37,30 +37,30 @@ class VGRelation(VisionDataset):
 
     def __init__(self, root=os.path.join('~', '.mxnet', 'datasets', 'visualgenome'),
                  top_frequent_rel=50, top_frequent_obj=150,
-                 split='all', balancing='sample'):
+                 split='all', balancing='sample', rel_json_path=None):
         super(VGRelation, self).__init__(root)
         self._im_shapes = {}
         self._root = os.path.expanduser(root)
         if split == 'all':
             self._dict_path = os.path.join(self._root, 'relationships.json')
-            self._obj_dict_path = os.path.join(self._root, 'objects.json')
             self._img_path = os.path.join(self._root, 'VG_100K', '{}.jpg')
         elif split == 'train':
             self._dict_path = os.path.join(self._root, 'relationships_train.json')
-            self._obj_dict_path = os.path.join(self._root, 'objects_train.json')
             self._img_path = os.path.join(self._root, 'train', '{}.jpg')
         elif split == 'val':
             self._dict_path = os.path.join(self._root, 'relationships_val.json')
-            self._obj_dict_path = os.path.join(self._root, 'objects_val.json')
             self._img_path = os.path.join(self._root, 'val', '{}.jpg')
+        elif split == 'custom':
+            if rel_json_path is not None:
+                self._dict_path = os.path.join(self._root, rel_json_path)
+                self._img_path = os.path.join(self._root, 'VG_100K', '{}.jpg')
+            else:
+                raise ValueError("Must set value for rel_json_path when split=='custom'.")
         else:
             raise NotImplementedError
         with open(self._dict_path) as f:
             tmp = f.read()
             self._dict = json.loads(tmp)
-        with open(self._obj_dict_path) as f:
-            tmp = f.read()
-            self._ori_dict = json.loads(tmp)
         self._classes_pkl = os.path.join(self._root, 'classes.pkl')
         with open(self._classes_pkl, 'rb') as f:
             vg_obj_classes, vg_rel_classes = pickle.load(f)
@@ -85,13 +85,40 @@ class VGRelation(VisionDataset):
         # extract global ids first, and map into local ids
         # object_ids = [0]
         object_ids = []
-        for rl in rel:
+        keep_inds = []
+        for i, rl in enumerate(rel):
             sub = rl['subject']
             ob = rl['object']
             if sub['object_id'] == ob['object_id']:
                 continue
+
+            if len(sub['synsets']) == 0:
+                continue
+            k = sub['synsets'][0].split('.')[0]
+            if not k in self._obj_classes_dict:
+                continue
+
+            if len(ob['synsets']) == 0:
+                continue
+            k = ob['synsets'][0].split('.')[0]
+            if k not in self._obj_classes_dict:
+                continue
+
+            if len(rl['synsets']) == 0:
+                continue
+            else:
+                synset = rl['synsets'][0].split('.')[0]
+                if synset not in self._relations_dict:
+                    continue
+
+            if len(rl['synsets']) == 0:
+                continue
+            synset = rl['synsets'][0].split('.')[0]
+            if synset not in self._relations_dict:
+                continue
             object_ids.append(sub['object_id'])
             object_ids.append(ob['object_id'])
+            keep_inds.append(i)
         object_ids = list(set(object_ids))
 
         ids_dict = {}
@@ -107,7 +134,10 @@ class VGRelation(VisionDataset):
                  'dst': [],
                  'rel': [],
                  'link': []}
-        for rl in rel:
+        keep_inds = set(keep_inds)
+        for i, rl in enumerate(rel):
+            if i not in keep_inds:
+                continue
             # extract xyhw and remap object id
             sub = rl['subject']
             ob = rl['object']
@@ -117,49 +147,28 @@ class VGRelation(VisionDataset):
                 continue
             sub_ind = ids_dict[sub_key]
             ob_ind = ids_dict[ob_key]
-            if sub_ind == ob_ind:
-                continue
+
             if sub_ind not in visit_ind:
                 visit_ind.add(sub_ind)
                 bbox[sub_ind,] = mx.nd.array([sub['x'], sub['y'],
                                               sub['w'] + sub['x'], sub['h'] + sub['y']])
-                if len(sub['synsets']) == 0:
-                    node_class[sub_ind] = 0
-                else:
-                    k = sub['synsets'][0].split('.')[0]
-                    if k in self._obj_classes_dict:
-                        node_class[sub_ind] = self._obj_classes_dict[k]
-                    else:
-                        node_class[sub_ind] = 0
+                k = sub['synsets'][0].split('.')[0]
+                node_class[sub_ind] = self._obj_classes_dict[k]
+
             if ob_ind not in visit_ind:
                 visit_ind.add(ob_ind)
                 bbox[ob_ind,] = mx.nd.array([ob['x'], ob['y'],
                                              ob['w'] + ob['x'], ob['h'] + ob['y']])
-                if len(ob['synsets']) == 0:
-                    node_class[ob_ind] = 0
-                else:
-                    k = ob['synsets'][0].split('.')[0]
-                    if k in self._obj_classes_dict:
-                        node_class[ob_ind] = self._obj_classes_dict[k]
-                    else:
-                        node_class[ob_ind] = 0
-            sub['object_id'] = sub_ind
-            ob['object_id'] = ob_ind
+                k = ob['synsets'][0].split('.')[0]
+                node_class[ob_ind] = self._obj_classes_dict[k]
 
             # relational label id of the edge
-            if len(rl['synsets']) == 0:
-                rel_idx = 0
-            else:
-                synset = rl['synsets'][0].split('.')[0]
-                if synset in self._relations_dict:
-                    rel_idx = self._relations_dict[synset]
-                else:
-                    rel_idx = 0
-            link = 0 if rel_idx == 0 else 1
+            synset = rl['synsets'][0].split('.')[0]
+            rel_idx = self._relations_dict[synset]
+
             edges['src'].append(sub_ind)
             edges['dst'].append(ob_ind)
             edges['rel'].append(rel_idx)
-            edges['link'].append(link)
         return edges, bbox, node_class.expand_dims(1)
 
     def _build_complete_graph(self, edges, bbox, node_class, img, img_id):
@@ -199,7 +208,7 @@ class VGRelation(VisionDataset):
         classes[eids.asnumpy()] = edges['rel']
         g.edata['classes'] = mx.nd.array(classes)
         links = np.zeros((n))
-        links[eids.asnumpy()] = edges['link']
+        links[eids.asnumpy()] = 1
         if links.sum() == 0:
             return None
         g.edata['link'] = mx.nd.array(links)
