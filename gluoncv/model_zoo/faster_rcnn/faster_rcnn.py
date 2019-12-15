@@ -355,6 +355,8 @@ class FasterRCNN(RCNN):
         if isinstance(x, tuple):
             x, m_rpn_box = x
             manual_rpn_box = True
+        else:
+            manual_rpn_box = False
         feat = self.features(x)
         if not isinstance(feat, (list, tuple)):
             feat = [feat]
@@ -378,9 +380,11 @@ class FasterRCNN(RCNN):
         # create batchid for roi
         if not manual_rpn_box:
             num_roi = self._num_sample if autograd.is_training() else self._rpn_test_post_nms
+            batch_size = self._batch_size if autograd.is_training() else 1
         else:
             num_roi = m_rpn_box.shape[1]
-        batch_size = self._batch_size if autograd.is_training() else rpn_box.shape[0]
+            batch_size = rpn_box.shape[0]
+
         with autograd.pause():
             roi_batchid = F.arange(0, batch_size)
             roi_batchid = F.repeat(roi_batchid, num_roi)
@@ -415,8 +419,7 @@ class FasterRCNN(RCNN):
         # cls_pred (B * N, C) -> (B, N, C)
         cls_pred = cls_pred.reshape((batch_size, num_roi, self.num_class + 1))
         if manual_rpn_box:
-            # spatial_feat = top_feat.sum(axis=1).expand_dims(0).reshape(batch_size, 0, -1)
-            spatial_feat = top_feat.sum(axis=1).reshape((-4, rpn_box.shape[0], rpn_box.shape[1], -3))
+            spatial_feat = top_feat.mean(axis=1).reshape((-4, rpn_box.shape[0], rpn_box.shape[1], -3))
             return rpn_box, spatial_feat, cls_pred
 
         # no need to convert bounding boxes in training, just return
@@ -487,7 +490,7 @@ class FasterRCNN(RCNN):
         feat_ind = F.slice_axis(result, axis=-1, begin=6, end=7)
         if self._additional_output:
             # box_feat = F.reshape(box_feat.expand_dims(0), (batch_size, -1, 0))
-            spatial_feat = top_feat.sum(axis=1).expand_dims(0).reshape(batch_size, 0, -1)
+            spatial_feat = top_feat.mean(axis=1).expand_dims(0).reshape(batch_size, 0, -1)
             # return ids, scores, bboxes, feat, feat_ind, box_feat, cls_pred
             return ids, scores, bboxes, feat, feat_ind, spatial_feat, cls_pred
         return ids, scores, bboxes

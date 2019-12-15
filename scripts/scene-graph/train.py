@@ -32,18 +32,17 @@ class EdgeLinkMLP(nn.Block):
     def __init__(self, n_hidden, n_classes):
         super(EdgeLinkMLP, self).__init__()
         self.mlp1 = nn.Dense(n_hidden)
-        self.relu = nn.Activation('relu')
-        self.mlp2 = nn.Dense(n_classes)
+        self.relu1 = nn.Activation('relu')
+        self.mlp2 = nn.Dense(n_hidden)
+        self.relu2 = nn.Activation('relu')
+        self.mlp3 = nn.Dense(n_classes)
 
     def forward(self, edges):
-        '''
-        feat = nd.concat(edges.src['node_class_vec'], edges.src['bbox'],
-                         edges.dst['node_class_vec'], edges.dst['bbox'])
-        '''
         feat = nd.concat(edges.src['node_class_prob'], edges.src['pred_bbox'],
                          edges.dst['node_class_prob'], edges.dst['pred_bbox'])
-        out = self.relu(self.mlp1(feat))
-        out = self.mlp2(out)
+        out = self.relu1(self.mlp1(feat))
+        out = self.relu2(self.mlp2(out))
+        out = self.mlp3(out)
         return {'link_preds': out}
 
 class EdgeMLP(nn.Block):
@@ -56,10 +55,6 @@ class EdgeMLP(nn.Block):
         self.mlp3 = nn.Dense(n_classes)
 
     def forward(self, edges):
-        '''
-        feat = nd.concat(edges.src['node_class_vec'], edges.src['emb'], edges.src['bbox'],
-                         edges.dst['node_class_vec'], edges.ds['emb'], edges.dst['bbox'])
-        '''
         feat = nd.concat(edges.src['node_class_prob'], edges.src['emb'], edges.src['pred_bbox'],
                          edges.dst['node_class_prob'], edges.dst['emb'], edges.dst['pred_bbox'])
         out = self.relu1(self.mlp1(feat))
@@ -97,15 +92,6 @@ class EdgeGCN(nn.Block):
         g.ndata['node_class_prob'] = self._softmax(cls)
         # link pred
         g.apply_edges(self.edge_link_mlp)
-        '''
-        # graph conv
-        x = g.ndata['node_feat']
-        for i, layer in enumerate(self.layers):
-            x = layer(g, x)
-        g.ndata['emb'] = x
-        # link classification
-        g.apply_edges(self.edge_mlp)
-        '''
         # subgraph for gconv
         eids = np.where(g.edata['link'].asnumpy() > 0)
         sub_g = g.edge_subgraph(toindex(eids[0].tolist()))
@@ -118,6 +104,8 @@ class EdgeGCN(nn.Block):
         # link classification
         sub_g.apply_edges(self.edge_mlp)
         sub_g.copy_to_parent()
+        n_relations = g.edata['preds'].shape[1]
+        g.edata['triplet_label'] = g.edata['classes'].one_hot(n_relations)
         return g
 
 filehandler = logging.FileHandler('output.log')
@@ -128,7 +116,6 @@ logger.addHandler(filehandler)
 logger.addHandler(streamhandler)
 
 # Hyperparams
-# ctx = mx.gpu()
 num_gpus = 1
 batch_size = num_gpus * 8
 ctx = [mx.gpu(i) for i in range(num_gpus)]
@@ -167,7 +154,6 @@ class AUCMetric(mx.metric.EvalMetric):
         label_sum = label_weight.sum()
         if label_sum == 0 or label_sum == label_weight.size:
             return
-            # raise Exception("AUC with one class is undefined")
 
         label_one_num = np.count_nonzero(label_weight)
         label_zero_num = len(label_weight) - label_one_num
@@ -187,6 +173,66 @@ class AUCMetric(mx.metric.EvalMetric):
 
 L_link = gluon.loss.SoftmaxCELoss()
 L_rel = gluon.loss.SoftmaxCELoss()
+L_cls = gluon.loss.SoftmaxCELoss()
+# L_rel = gcv.loss.FocalLoss(num_class=N_relations)
+
+@mx.metric.register
+@mx.metric.alias('predcls')
+class PredCls(mx.metric.EvalMetric):
+    def __init__(self, topk=20):
+        super(PredCls, self).__init__('predcls@%d'%(topk))
+        self.topk = topk
+
+    def update(self, labels, preds):
+        if labels is None or preds is None:
+            self.num_inst += 1
+            return
+        from operator import itemgetter
+        preds = sorted(preds, key=itemgetter(0), reverse=True)
+        m = min(self.topk, len(preds))
+        count = 0
+        for i in range(m):
+            score, pred_sub, pred_rel, pred_ob = preds[i]
+            for gt_sub, gt_rel, gt_ob in labels:
+                if gt_sub == pred_sub and \
+                   gt_rel == pred_rel and \
+                   gt_ob == pred_ob:
+                    count += 1
+        self.sum_metric += count / len(labels)
+        self.num_inst += 1
+
+def get_triplet_predcls(g):
+    # gt triplet
+    gt_eids = np.where(g.edata['link'].asnumpy() > 0)[0]
+    gt_node_ids = g.find_edges(gt_eids)
+    gt_node_sub = gt_node_ids[0].asnumpy()
+    gt_node_ob = gt_node_ids[1].asnumpy()
+    gt_rel = g.edata['classes'][gt_eids].asnumpy()
+    gt_triplet = []
+    for sub, rel, ob in zip(gt_node_sub, gt_rel, gt_node_ob):
+        gt_triplet.append((int(sub), int(rel), int(ob)))
+
+    # pred triplet
+    tmp = nd.softmax(g.edata['link_preds'][:,1]).asnumpy()
+    eids = tmp.argsort()[::-1]
+    if len(eids) == 0:
+        return gt_triplet, []
+    pred_node_ids = g.find_edges(eids)
+    pred_node_sub = pred_node_ids[0].asnumpy()
+    pred_node_ob = pred_node_ids[1].asnumpy()
+    pred_link = nd.softmax(g.edata['link_preds'][eids]).asnumpy()
+    pred_rel = nd.softmax(g.edata['preds'][eids]).asnumpy()
+    pred_triplet = []
+
+    n = len(eids)
+    rel_ind = pred_rel.argmax(axis=1)
+    for i in range(n):
+        rel = rel_ind[i]
+        scores = (pred_link[i,1] * pred_rel[i, rel])
+        sub = pred_node_sub[i]
+        ob = pred_node_ob[i]
+        pred_triplet.append((scores, int(sub), int(rel), int(ob)))
+    return gt_triplet, pred_triplet
 
 train_metric = mx.metric.Accuracy()
 train_metric_top5 = mx.metric.TopKAccuracy(5)
@@ -194,34 +240,32 @@ train_metric_node = mx.metric.Accuracy()
 train_metric_node_top5 = mx.metric.TopKAccuracy(5)
 train_metric_f1 = mx.metric.F1()
 train_metric_auc = AUCMetric()
+train_metric_r100 = PredCls(100)
 
 # dataset and dataloader
 vg_train = gcv.data.VGRelation(top_frequent_rel=N_relations, top_frequent_obj=N_objects,
                                balancing='weight', split='train')
 '''
-vg_val = gcv.data.VGRelation(top_frequent_rel=N_relations, top_frequent_obj=N_objects,
-                             balancing='weight', split='val')
+                               balancing='weight', split='custom',
+                               rel_json_path='/home/ubuntu/visualgenome/relationships_small.json')
 '''
 logger.info('data loaded!')
 train_data = gluon.data.DataLoader(vg_train, batch_size=batch_size, shuffle=True, num_workers=8*num_gpus,
                                    batchify_fn=gcv.data.dataloader.dgl_mp_batchify_fn)
-'''
-val_data = gluon.data.DataLoader(vg_val, batch_size=1, shuffle=False, num_workers=60,
-                                   batchify_fn=gcv.data.dataloader.dgl_mp_batchify_fn)
-'''
 
+'''
 detector = get_model('faster_rcnn_resnet50_v1b_custom', classes=vg_train._obj_classes,
                      pretrained_base=False, pretrained=False, additional_output=True)
 params_path = 'faster_rcnn_resnet50_v1b_custom_0007_0.2398.params'
+'''
+detector = get_model('faster_rcnn_resnet101_v1d_custom', classes=vg_train._obj_classes,
+                     pretrained_base=False, pretrained=False, additional_output=True)
+params_path = 'faster_rcnn_resnet101_v1d_custom_0005_0.2528.params'
 detector.load_parameters(params_path, ctx=ctx, ignore_extra=True, allow_missing=True)
-# detector.initialize()
 for k, v in detector.collect_params().items():
     v.grad_req = 'null'
-'''
 for k, v in detector.class_predictor.collect_params().items():
     v.grad_req = 'write'
-detector.save_parameters('%s/detector-%d.params'%(save_dir, 0))
-'''
 
 def get_data_batch(g_list, img_list, ctx_list):
     if g_list is None or len(g_list) == 0:
@@ -289,7 +333,12 @@ def merge_res_iou(g, scores, bbox, feat_ind, spatial_feat, cls_pred, iou_thresh=
     g.ndata['node_class_pred'] = cls_pred[roi_ind]
     return g
 
-def merge_res(g_slice, bbox, spatial_feat, cls_pred):
+def merge_res(g_slice, img, bbox, spatial_feat, cls_pred):
+    img_size = img.shape[2:4]
+    bbox[:, :, 0] /= img_size[1]
+    bbox[:, :, 1] /= img_size[0]
+    bbox[:, :, 2] /= img_size[1]
+    bbox[:, :, 3] /= img_size[0]
     for i, g in enumerate(g_slice):
         n_node = g.number_of_nodes()
         g.ndata['pred_bbox'] = bbox[i, 0:n_node]
@@ -307,6 +356,7 @@ for epoch in range(nepoch):
     train_metric_node_top5.reset()
     train_metric_f1.reset()
     train_metric_auc.reset()
+    train_metric_r100.reset()
     if epoch == 8:
         trainer.set_learning_rate(trainer.learning_rate*0.1)
     n_batches = len(train_data)
@@ -319,21 +369,23 @@ for epoch in range(nepoch):
         detector_res_list = []
         G_batch = []
         bbox_pad = Pad(axis=(0))
-        for G_slice, img in zip(G_list, img_list):
-            cur_ctx = img.context
-            bbox_list = [G.ndata['bbox'] for G in G_slice]
-            bbox_stack = bbox_pad(bbox_list).as_in_context(cur_ctx)
-            bbox, spatial_feat, cls_pred = detector((img, bbox_stack))
-            G_batch.append(merge_res(G_slice, bbox, spatial_feat, cls_pred))
-
         with mx.autograd.record():
+            for G_slice, img in zip(G_list, img_list):
+                cur_ctx = img.context
+                bbox_list = [G.ndata['bbox'] for G in G_slice]
+                bbox_stack = bbox_pad(bbox_list).as_in_context(cur_ctx)
+                bbox, spatial_feat, cls_pred = detector((img, bbox_stack))
+                G_batch.append(merge_res(G_slice, img, bbox, spatial_feat, cls_pred))
+
             G_batch = [net(G) for G in G_batch]
 
             for G in G_batch:
                 if G is not None and G.number_of_nodes() > 0:
+                    # loss_rel = L_rel(G.edata['preds'], G.edata['classes'], G.edata['link'].expand_dims(1))
                     loss_rel = L_rel(G.edata['preds'], G.edata['classes'], G.edata['link'])
                     loss_link = L_link(G.edata['link_preds'], G.edata['link'], G.edata['weights'])
-                    loss.append(loss_rel.sum() + loss_link.sum())
+                    loss_cls = L_link(G.ndata['node_class_pred'], G.ndata['node_class_ids'] + 1)
+                    loss.append(loss_rel.sum() + loss_link.sum() + loss_cls.sum())
 
         for l in loss:
             l.backward()
@@ -347,10 +399,12 @@ for epoch in range(nepoch):
                 continue
             train_metric.update([G.edata['classes'][link_ind]], [G.edata['preds'][link_ind]])
             train_metric_top5.update([G.edata['classes'][link_ind]], [G.edata['preds'][link_ind]])
-            train_metric_node.update([G.ndata['node_class_ids']], [G.ndata['node_class_pred']])
-            train_metric_node_top5.update([G.ndata['node_class_ids']], [G.ndata['node_class_pred']])
+            train_metric_node.update([G.ndata['node_class_ids'] + 1], [G.ndata['node_class_pred']])
+            train_metric_node_top5.update([G.ndata['node_class_ids'] + 1], [G.ndata['node_class_pred']])
             train_metric_f1.update([G.edata['link']], [G.edata['link_preds']])
             train_metric_auc.update([G.edata['link']], [G.edata['link_preds']])
+            gt_triplet, pred_triplet = get_triplet_predcls(G)
+            train_metric_r100.update(gt_triplet, pred_triplet)
         if (i+1) % batch_verbose_freq == 0:
             _, acc = train_metric.get()
             _, acc_top5 = train_metric_top5.get()
@@ -358,12 +412,9 @@ for epoch in range(nepoch):
             _, node_acc_top5 = train_metric_node_top5.get()
             _, f1 = train_metric_f1.get()
             _, auc = train_metric_auc.get()
-            logger.info('Epoch[%d] Batch [%d/%d] \ttime: %d\tloss=%.4f\tacc=%.4f,acc-top5=%.4f\tnode-acc=%.4f,node-acc-top5=%.4f\tf1=%.4f,auc=%.4f'%(
-                        epoch, i, n_batches, int(time.time() - btic), loss_val / (i+1), acc, acc_top5, node_acc, node_acc_top5, f1, auc))
-            '''
-            logger.info('Epoch[%d] Batch [%d] \ttime: %d\tloss=%.4f\tacc=%.4f,acc-top5=%.4f\tf1=%.4f,auc=%.4f'%(
-                        epoch, i, int(time.time() - btic), loss_val / (i+1), acc, acc_top5, f1, auc))
-            '''
+            _, r100 = train_metric_r100.get()
+            logger.info('Epoch[%d] Batch [%d/%d] \ttime: %d\tloss=%.4f\tacc=%.4f,acc-top5=%.4f\tnode-acc=%.4f,node-acc-top5=%.4f\tf1=%.4f,auc=%.4f\tpredcls@100=%.4f'%(
+                        epoch, i, n_batches, int(time.time() - btic), loss_val / (i+1), acc, acc_top5, node_acc, node_acc_top5, f1, auc, r100))
             btic = time.time()
     _, acc = train_metric.get()
     _, acc_top5 = train_metric_top5.get()
@@ -371,12 +422,10 @@ for epoch in range(nepoch):
     _, node_acc_top5 = train_metric_node_top5.get()
     _, f1 = train_metric_f1.get()
     _, auc = train_metric_auc.get()
-    logger.info('Epoch[%d] \ttime: %d\tloss=%.4f\tacc=%.4f,acc-top5=%.4f\tnode-acc=%.4f,node-acc-top5=%.4f\tf1=%.4f,auc=%.4f\n'%(
-                epoch, int(time.time() - tic), loss_val / (i+1), acc, acc_top5, node_acc, node_acc_top5, f1, auc))
-    '''
-    logger.info('Epoch[%d] \ttime: %d\tloss=%.4f\tacc=%.4f,acc-top5=%.4f\tf1=%.4f,auc=%.4f\n'%(
-                epoch, int(time.time() - tic), loss_val / (i+1), acc, acc_top5, f1, auc))
-    '''
+    _, r100 = train_metric_r100.get()
+    logger.info('Epoch[%d] \ttime: %d\tloss=%.4f\tacc=%.4f,acc-top5=%.4f\tnode-acc=%.4f,node-acc-top5=%.4f\tf1=%.4f,auc=%.4f\tpredcls@100=%.4f\n'%(
+                epoch, int(time.time() - tic), loss_val / (i+1), acc, acc_top5, node_acc, node_acc_top5, f1, auc, r100))
     # detector.save_parameters('%s/detector-%d.params'%(save_dir, epoch))
     net.save_parameters('%s/model-%d.params'%(save_dir, epoch))
+    detector.class_predictor.save_parameters('%s/class_predictor-%d.params'%(save_dir, epoch))
 

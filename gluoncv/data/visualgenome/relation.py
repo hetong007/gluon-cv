@@ -186,10 +186,12 @@ class VGRelation(VisionDataset):
         g.add_edges(dst, src)
 
         # node features
+        '''
         bbox[:,0] /= img.shape[2]
         bbox[:,1] /= img.shape[1]
         bbox[:,2] /= img.shape[2]
         bbox[:,3] /= img.shape[1]
+        '''
         g.ndata['bbox'] = bbox
 
         g.ndata['node_class_ids'] = node_class
