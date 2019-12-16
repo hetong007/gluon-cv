@@ -125,14 +125,14 @@ logger.addHandler(streamhandler)
 # ctx = mx.gpu() 
 num_gpus = 1
 batch_size = num_gpus * 16
-ctx = [mx.gpu(i) for i in range(num_gpus)]
+ctx = [mx.gpu(i) for i in range(num_gpus)] if num_gpus > 0 else [mx.cpu()]
 N_relations = 50
 N_objects = 150
 
 net = EdgeGCN(in_feats=49, n_hidden=32, n_classes=N_relations,
               n_layers=2, activation=nd.relu,
               box_feat_ext='mobilenet1.0', pretrained_base=False, ctx=ctx)
-net.load_parameters('params/model-0.params', ctx=ctx)
+net.load_parameters('params/model-9.params', ctx=ctx)
 
 vg_val = gcv.data.VGRelation(top_frequent_rel=N_relations, top_frequent_obj=N_objects,
                              balancing='weight', split='val')
@@ -140,11 +140,16 @@ logger.info('data loaded!')
 val_data = gluon.data.DataLoader(vg_val, batch_size=1, shuffle=False, num_workers=60,
                                    batchify_fn=gcv.data.dataloader.dgl_mp_batchify_fn)
 
+'''
 detector = get_model('faster_rcnn_resnet50_v1b_custom', classes=vg_val._obj_classes,
                      pretrained_base=False, pretrained=False, additional_output=True)
 params_path = 'faster_rcnn_resnet50_v1b_custom_0007_0.2398.params'
+'''
+detector = get_model('faster_rcnn_resnet101_v1d_custom', classes=vg_val._obj_classes,
+                     pretrained_base=False, pretrained=False, additional_output=True)
+params_path = 'faster_rcnn_resnet101_v1d_custom_0005_0.2528.params'
 detector.load_parameters(params_path, ctx=ctx, ignore_extra=True, allow_missing=True)
-detector.class_predictor.load_parameters('params/class_predictor-0.params', ctx=ctx)
+detector.class_predictor.load_parameters('params/class_predictor-9.params', ctx=ctx)
 
 def get_data_batch(g_list, img_list, ctx_list):
     if g_list is None or len(g_list) == 0:
@@ -209,8 +214,8 @@ class PhrCls(mx.metric.EvalMetric):
         m = min(self.topk, len(preds))
         count = 0
         for i in range(m):
-            score, pred_sub_cls, pred_ob_cls, pred_sub, pred_rel, pred_ob = preds[i]
-            for gt_sub_cls, gt_ob_cls, gt_sub, gt_rel, gt_ob in labels:
+            score, pred_sub, pred_rel, pred_ob, pred_sub_cls, pred_ob_cls = preds[i]
+            for gt_sub, gt_rel, gt_ob, gt_sub_cls, gt_ob_cls in labels:
                 if gt_sub_cls == pred_sub_cls and \
                    gt_ob_cls == pred_ob_cls and \
                    gt_sub == pred_sub and \
@@ -267,7 +272,7 @@ def get_triplet_phrcls(g, link_pred_topk=100):
     gt_ob_class = g.ndata['node_class_ids'][gt_node_ob][:,0].asnumpy()
     gt_triplet = []
     for sub, rel, ob, sub_class, ob_class in zip(gt_node_sub, gt_rel, gt_node_ob, gt_sub_class, gt_ob_class):
-        gt_triplet.append((int(sub_class), int(ob_class), int(sub), int(rel), int(ob)))
+        gt_triplet.append((int(sub), int(rel), int(ob), int(sub_class), int(ob_class)))
 
     # pred triplet
     tmp = nd.softmax(g.edata['link_preds'][:,1]).asnumpy()
@@ -299,8 +304,64 @@ def get_triplet_phrcls(g, link_pred_topk=100):
         ob = pred_node_ob[i]
         sub_class = pred_sub_class[i]
         ob_class = pred_ob_class[i]
-        pred_triplet.append((scores, int(sub_class), int(ob_class),
-                                int(sub), int(rel), int(ob)))
+        pred_triplet.append((scores, int(sub), int(rel), int(ob),
+                             int(sub_class), int(ob_class)))
+    return gt_triplet, pred_triplet
+
+def get_triplet_sgdet(g):
+    # gt triplet
+    gt_eids = np.where(g.edata['link'].asnumpy() > 0)[0]
+    gt_node_ids = g.find_edges(gt_eids)
+    gt_node_sub = gt_node_ids[0].asnumpy()
+    gt_node_ob = gt_node_ids[1].asnumpy()
+    gt_rel = g.edata['classes'][gt_eids].asnumpy()
+    gt_sub_class = g.ndata['node_class_ids'][gt_node_sub][:,0].asnumpy()
+    gt_ob_class = g.ndata['node_class_ids'][gt_node_ob][:,0].asnumpy()
+    gt_sub_bbox = g.ndata['bbox'][gt_node_sub].asnumpy()
+    gt_ob_bbox = g.ndata['bbox'][gt_node_ob].asnumpy()
+    gt_triplet = []
+    for sub, rel, ob, sub_class, ob_class, sub_bbox, ob_bbox in zip(gt_node_sub, gt_rel, gt_node_ob, gt_sub_class, gt_ob_class, gt_sub_bbox, gt_ob_bbox):
+        gt_triplet.append((int(sub), int(rel), int(ob), int(sub_class), int(ob_class),
+                           sub_bbox[0], sub_bbox[1], sub_bbox[2], sub_bbox[3],
+                           ob_bbox[0], ob_bbox[1], ob_bbox[2], ob_bbox[3]))
+
+    # pred triplet
+    tmp = nd.softmax(g.edata['link_preds'][:,1]).asnumpy()
+    # eids = np.where(tmp > link_pred_thresh)[0]
+    eids = tmp.argsort()[::-1][0:link_pred_topk]
+    if len(eids) == 0:
+        return gt_triplet, []
+    pred_node_ids = g.find_edges(eids)
+    pred_node_sub = pred_node_ids[0].asnumpy()
+    pred_node_ob = pred_node_ids[1].asnumpy()
+    pred_link = nd.softmax(g.edata['link_preds'][eids]).asnumpy()
+    pred_rel = nd.softmax(g.edata['preds'][eids]).asnumpy()
+    pred_sub_prob = g.ndata['node_class_prob'][pred_node_sub, 1:].asnumpy()
+    pred_ob_prob = g.ndata['node_class_prob'][pred_node_ob, 1:].asnumpy()
+    pred_sub_class = pred_sub_prob.argmax(axis=1)
+    pred_ob_class = pred_ob_prob.argmax(axis=1)
+    pred_sub_bbox = g.ndata['pred_bbox'][gt_node_sub].asnumpy()
+    pred_ob_bbox = g.ndata['pred_bbox'][gt_node_ob].asnumpy()
+    pred_triplet = []
+
+    n = len(eids)
+    rel_ind = pred_rel.argmax(axis=1)
+    # for rel in range(pred_rel.shape[1]):
+    # import pdb; pdb.set_trace()
+    for i in range(n):
+        rel = rel_ind[i]
+        scores = (pred_link[i,1] * pred_rel[i, rel])
+        scores *= pred_sub_prob[i, rel]
+        scores *= pred_ob_prob[i, rel]
+        sub = pred_node_sub[i]
+        ob = pred_node_ob[i]
+        sub_class = pred_sub_class[i]
+        ob_class = pred_ob_class[i]
+        sub_bbox = pred_sub_bbox[i]
+        ob_bbox = pred_ob_bbox[i]
+        pred_triplet.append((scores, int(sub), int(rel), int(ob), int(sub_class), int(ob_class), 
+                             sub_bbox[0], sub_bbox[1], sub_bbox[2], sub_bbox[3],
+                             ob_bbox[0], ob_bbox[1], ob_bbox[2], ob_bbox[3]))
     return gt_triplet, pred_triplet
 
 @mx.metric.register
@@ -328,77 +389,50 @@ class SGDet(mx.metric.EvalMetric):
         self.sum_metric += count / len(labels)
         self.num_inst += 1
 
-def get_triplet_sgdet(g, iou_thresh=0.5, link_pred_topk=100):
-    # gt triplet
-    gt_eids = np.where(g.edata['link'].asnumpy() > 0)[0]
-    gt_node_ids = g.find_edges(gt_eids)
-    gt_node_sub = gt_node_ids[0].asnumpy()
-    gt_node_ob = gt_node_ids[1].asnumpy()
-    gt_rel = g.edata['classes'][gt_eids].asnumpy().astype(gt_node_sub.dtype)
-    gt_tuple = [(sub, rel, ob) for sub, rel, ob in zip(gt_node_sub, gt_rel, gt_node_ob)]
+def merge_res_iou(g_slice, img_batch, scores, bbox_list, feat_ind, spatial_feat, cls_pred):
+    import pdb; pdb.set_trace()
+    for i, g in enumerate(g_slice):
+        img = img_batch[i]
+        gt_bbox = g.ndata['bbox']
+        img_size = img.shape[1:3]
+        gt_bbox[:, 0] /= img_size[1]
+        gt_bbox[:, 1] /= img_size[0]
+        gt_bbox[:, 2] /= img_size[1]
+        gt_bbox[:, 3] /= img_size[0]
+        inds = np.where(scores[i,:,0].asnumpy() > 0)[0].tolist()
+        if len(inds) == 0:
+            return None
+        bbox = bbox_list[i,inds,:]
+        bbox[:, 0] /= img_size[1]
+        bbox[:, 1] /= img_size[0]
+        bbox[:, 2] /= img_size[1]
+        bbox[:, 3] /= img_size[0]
+        ious = nd.contrib.box_iou(gt_bbox, bbox[inds])
+        # assignment
+        H, W = ious.shape
+        h = H
+        w = W
+        assign_ind = [-1 for i in range(H)]
+        while h > 0 and w > 0:
+            ind = int(ious.argmax().asscalar())
+            row_ind = ind // W
+            col_ind = ind % W
+            if ious[row_ind, col_ind].asscalar() < iou_thresh:
+                break
+            assign_ind[row_ind] = col_ind
+            ious[row_ind, :] = -1
+            ious[:, col_ind] = -1
+            h -= 1
+            w -= 1
 
-    gt_sub_class = g.ndata['node_class_ids'][gt_node_sub].asnumpy()
-    gt_ob_class = g.ndata['node_class_ids'][gt_node_ob].asnumpy()
-    gt_sub_bbox = g.ndata['bbox'][gt_node_sub].asnumpy()
-    gt_ob_bbox = g.ndata['bbox'][gt_node_ob].asnumpy()
-
-    # pred triplet
-    tmp = nd.softmax(g.edata['link_preds'][:,1]).asnumpy()
-    eids = tmp.argsort()[::-1][0:link_pred_topk]
-    pred_node_ids = g.find_edges(eids)
-    pred_node_sub = pred_node_ids[0].asnumpy()
-    pred_node_ob = pred_node_ids[1].asnumpy()
-    pred_link = nd.softmax(g.edata['link_preds'][eids])
-    pred_rel = nd.softmax(g.edata['preds'][eids])
-    pred_triplet = []
-
-    n = len(eids)
-    for rel in range(pred_rel.shape[1]):
-        scores = (pred_link[:,1] * pred_rel[:, rel]).asnumpy()
-        for i in range(n):
-            sub = pred_node_sub[i]
-            ob = pred_node_ob[i]
-            pred_triplet.append((scores[i], sub, rel, ob))
-    return gt_triplet, pred_triplet
-
-def merge_res_iou(g, scores, bbox, feat_ind, spatial_feat, cls_pred, iou_thresh=0.5):
-    img = g.ndata['images'][0]
-    gt_bbox = g.ndata['bbox']
-    gt_bbox[0,:] = [0, 0, 0, 0]
-    img_size = img.shape[1:3]
-    bbox[:, 0] /= img_size[1]
-    bbox[:, 1] /= img_size[0]
-    bbox[:, 2] /= img_size[1]
-    bbox[:, 3] /= img_size[0]
-    inds = np.where(scores[:,0].asnumpy() > 0)[0].tolist()
-    if len(inds) == 0:
-        return None
-    ious = nd.contrib.box_iou(gt_bbox, bbox[inds])
-    # assignment
-    H, W = ious.shape
-    h = H
-    w = W
-    assign_ind = [-1 for i in range(H)]
-    while h > 0 and w > 0:
-        ind = int(ious.argmax().asscalar())
-        row_ind = ind // W
-        col_ind = ind % W
-        if ious[row_ind, col_ind].asscalar() < iou_thresh:
-            break
-        assign_ind[row_ind] = col_ind
-        ious[row_ind, :] = -1
-        ious[:, col_ind] = -1
-        h -= 1
-        w -= 1
-
-    remove_inds = [i for i in range(H) if assign_ind[i] == -1]
-    assign_ind = [ind for ind in assign_ind if ind > -1]
-    g.remove_nodes(remove_inds)
-    box_ind = [inds[i] for i in assign_ind]
-    roi_ind = feat_ind[box_ind].squeeze(1)
-    g.ndata['pred_bbox'] = bbox[box_ind]
-    g.ndata['node_feat'] = spatial_feat[roi_ind]
-    g.ndata['node_class_pred'] = cls_pred[roi_ind]
+        remove_inds = [i for i in range(H) if assign_ind[i] == -1]
+        assign_ind = [ind for ind in assign_ind if ind > -1]
+        g.remove_nodes(remove_inds)
+        box_ind = [inds[i] for i in assign_ind]
+        roi_ind = feat_ind[box_ind].squeeze(1)
+        g.ndata['pred_bbox'] = bbox[box_ind]
+        g.ndata['node_feat'] = spatial_feat[roi_ind]
+        g.ndata['node_class_pred'] = cls_pred[roi_ind]
     return g
 
 def merge_res(g_slice, img, bbox, spatial_feat, cls_pred):
@@ -453,7 +487,7 @@ def validate(net, val_data, ctx, mode=['predcls']):
                 G_batch.append(merge_res(G_slice, img, bbox, spatial_feat, cls_pred))
             if 'sgdet' in mode or 'sgdet+' in mode:
                 box_ids, scores, bboxes, feat, feat_ind, spatial_feat, cls_pred = detector(img)
-                G_batch.append(merge_res_iou(G_slice, box_ids, scores, bboxes, spatial_feat, cls_pred))
+                G_batch.append(merge_res_iou(G_slice, img, scores, bboxes, feat_ind, spatial_feat, cls_pred))
 
         if len(G_batch) > 0:
             G_batch = [net(G) for G in G_batch]
@@ -524,8 +558,7 @@ def validate(net, val_data, ctx, mode=['predcls']):
         print_txt += '%s=%.4f,%s=%.4f,%s=%.4f\t'%(name20, pred20, name50, pred50, name100, pred100)
     logger.info(print_txt)
 
-predcls20, predcls50, predcls100 = validate(net, val_data, ctx, mode=['predcls', 'phrcls'])
+validate(net, val_data, ctx, mode=['predcls', 'phrcls'])
 '''
-phrcls20, phrcls50, phrcls100 = validate(net, val_data, ctx, mode='sgdet')
-print("%f, %f, %f"%(phrcls20, phrcls50, phrcls100))
+validate(net, val_data, ctx, mode='sgdet')
 '''
